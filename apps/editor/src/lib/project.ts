@@ -12,6 +12,7 @@ import {
   type DetectResult,
   type EncodedClip,
   type JointMap,
+  type KeyLayer,
 } from '@rigforge/core';
 import type { ClipEntry, useStore } from '../store';
 
@@ -32,7 +33,7 @@ interface ProjectFile {
   detection: DetectResult | null;
   joints: JointMap | null;
   rig: { skinIndex: string; skinWeight: string } | null;
-  clips: Array<{ name: string; source: string; loop: boolean; inPlace: boolean; speed: number; trim?: [number, number]; clip: EncodedClip }>;
+  clips: Array<{ name: string; source: string; loop: boolean; inPlace: boolean; speed: number; trim?: [number, number]; keys?: KeyLayer; clip: EncodedClip }>;
   exportName: string;
   exportPreset: StoreState['exportPreset'];
   step: StoreState['step'];
@@ -100,6 +101,7 @@ export async function saveProject(s: StoreState): Promise<Blob> {
       inPlace: c.inPlace,
       speed: c.speed,
       trim: c.trim,
+      keys: c.keys,
       clip: encodeClip(c.normalized, { id: c.id, category: 'project', source: c.source }),
     })),
     exportName: s.exportName,
@@ -158,7 +160,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     const built = buildSkinnedCharacter(normalizedGeometry, materials, humanoidDefs(file.fingers), file.joints, skinIndex, skinWeight, 'Character');
     const binding = bindSkeleton(built.root, autoMapBones(built.root).map);
     const clips: ClipEntry[] = file.clips.map((c, i) => {
-      const entry = { id: `p${Date.now().toString(36)}${i}`, name: c.name, source: c.source, normalized: decodeClip(c.clip), loop: c.loop, inPlace: c.inPlace, speed: c.speed, trim: c.trim };
+      const entry = { id: `p${Date.now().toString(36)}${i}`, name: c.name, source: c.source, normalized: decodeClip(c.clip), loop: c.loop, inPlace: c.inPlace, speed: c.speed, trim: c.trim, keys: c.keys };
       return { ...entry, baked: bake(entry, binding) };
     });
     Object.assign(patch, {

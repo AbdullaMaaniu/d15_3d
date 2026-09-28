@@ -19,6 +19,7 @@ import {
   type SkinnedMesh,
 } from 'three';
 import { useStore } from '../store';
+import { KeyEditor } from './KeyEditor';
 
 /** Hue per bone so the dominant-influence view reads as distinct regions. */
 function boneColor(i: number, out: Color): Color {
@@ -49,6 +50,7 @@ export function CharacterView() {
   const seek = useStore((s) => s.seek);
   const setStore = useStore((s) => s.set);
   const paint = useStore((s) => s.paint);
+  const keyEditing = useStore((s) => s.keyEdit.clipId !== null);
   const weightsVersion = useStore((s) => s.weightsVersion);
 
   const meshes = useMemo(() => skinnedMeshes(character.root), [character]);
@@ -82,7 +84,16 @@ export function CharacterView() {
     action.setEffectiveTimeScale(speed);
     action.reset().setEffectiveWeight(1).play();
     const prev = current.current;
-    if (prev && prev !== action) prev.crossFadeTo(action, 0.25, false);
+    const editing = useStore.getState().keyEdit.clipId !== null;
+    if (editing) {
+      // Keyframing: swap instantly and stay on the current frame.
+      if (prev && prev !== action) {
+        prev.stop();
+        mixer.uncacheAction(prev.getClip());
+      }
+      action.time = Math.min(useStore.getState().time, clip.duration);
+      mixer.update(0);
+    } else if (prev && prev !== action) prev.crossFadeTo(action, 0.25, false);
     current.current = action;
     return undefined;
   }, [clip, loop, speed, mixer, meshes]);
@@ -150,6 +161,7 @@ export function CharacterView() {
     <>
       <primitive object={character.root} {...(paint.active ? brush.handlers : {})} />
       {showSkeleton && <primitive object={helper} />}
+      {keyEditing && <KeyEditor root={character.root} />}
       {paint.active && (
         <mesh ref={brush.cursor} visible={false} renderOrder={30}>
           <ringGeometry args={[paint.radius * 0.92, paint.radius, 48]} />

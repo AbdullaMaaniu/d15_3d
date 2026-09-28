@@ -30,3 +30,8 @@ export { encodeClip, decodeClip, type EncodedClip, type PresetPack } from './ani
 export { exportCharacter, toGLB, createIO, sizeBreakdown, type ExportOptions, type ExportPreset, type ExportResult, type SizeBreakdown } from './export/export';
 export { generateSnippet, type SnippetInput, type SnippetKind } from './export/snippets';
 export { createPaintContext, applyBrush, snapshotWeights, restoreWeights, type BrushMode, type BrushStroke, type PaintContext } from './rig/paint';
+export {
+  emptyKeyLayer, keyCount, keyTimes, setBoneKey, setHipsKey, deleteKeys, cloneLayer, applyKeyLayer,
+  sampleBoneOffset, sampleHipsOffset, rigLocalToNormalized, rigHipsToNormalized, sampleNormalized,
+  sampleNormalizedHips, bindPoseClip, type KeyLayer, type KeyChannel,
+} from './anim/keys';

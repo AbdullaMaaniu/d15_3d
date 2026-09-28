@@ -1,9 +1,50 @@
 import { useMemo } from 'react';
 import { PRESETS, useStore } from '../store';
-import { Check, FilePicker, Section } from '../components/ui';
+import { humanoidDefs, keyCount } from '@rigforge/core';
+import { Check, FilePicker, Section, Seg } from '../components/ui';
 
 const CATEGORY_ORDER = ['idle', 'locomotion', 'action', 'combat', 'emote'];
 const ESSENTIALS = ['idle', 'walk', 'run', 'jump'];
+
+function KeyEditSection() {
+  const keyEdit = useStore((s) => s.keyEdit);
+  const setKeyEdit = useStore((s) => s.setKeyEdit);
+  const stop = useStore((s) => s.stopKeyEdit);
+  const entry = useStore((s) => s.clips.find((c) => c.id === s.keyEdit.clipId));
+  const setClipKeys = useStore((s) => s.setClipKeys);
+  const fingers = useStore((s) => s.fingers);
+  if (!entry) return null;
+  const count = keyCount(entry.keys);
+  return (
+    <Section title={`Keyframing “${entry.name}”`} right={<button className="btn small active" onClick={stop}>Done</button>}>
+      <p className="footer-note">
+        Click a bone handle, rotate it with the gizmo and it's keyed at the playhead. <span className="kbd">K</span> key · <span className="kbd">Del</span> delete · <span className="kbd">,</span> <span className="kbd">.</span> step frames.
+      </p>
+      <div className="row">
+        <select className="text" style={{ flex: 1 }} value={keyEdit.bone ?? ''} onChange={(e) => setKeyEdit({ bone: e.target.value || null })} aria-label="Bone">
+          {humanoidDefs(fingers).map((d) => (
+            <option key={d.name} value={d.name}>{d.name}</option>
+          ))}
+        </select>
+        {keyEdit.bone === 'hips' && (
+          <Seg value={keyEdit.mode} onChange={(mode) => setKeyEdit({ mode })} options={[['rotate', 'Rotate'], ['translate', 'Move']]} />
+        )}
+      </div>
+      <div className="row between">
+        <Check checked={keyEdit.autoKey} onChange={(autoKey) => setKeyEdit({ autoKey })}>Auto-key</Check>
+        <Seg
+          value={entry.keys?.interpolation ?? 'linear'}
+          onChange={(v) => setClipKeys(entry.id, { ...(entry.keys ?? { bones: {} }), interpolation: v })}
+          options={[['linear', 'Linear'], ['smooth', 'Ease']]}
+        />
+      </div>
+      <div className="row between">
+        <span className="footer-note">{count} key{count === 1 ? '' : 's'}</span>
+        <button className="btn small" disabled={!count} onClick={() => setClipKeys(entry.id, undefined)}>Clear keys</button>
+      </div>
+    </Section>
+  );
+}
 
 function TrimRow({ id }: { id: string }) {
   const c = useStore((s) => s.clips.find((x) => x.id === id))!;
@@ -42,6 +83,10 @@ export function AnimatePanel() {
   const mirror = useStore((s) => s.mirror);
   const play = useStore((s) => s.play);
   const goto = useStore((s) => s.goto);
+  const keyEdit = useStore((s) => s.keyEdit);
+  const startKeyEdit = useStore((s) => s.startKeyEdit);
+  const stopKeyEdit = useStore((s) => s.stopKeyEdit);
+  const newClip = useStore((s) => s.newClip);
 
   const grouped = useMemo(() => {
     const g = new Map<string, typeof PRESETS>();
@@ -57,6 +102,7 @@ export function AnimatePanel() {
         <p>Add motion-captured presets or retarget your own Mixamo FBX, BVH or GLB clips.</p>
       </div>
 
+      {keyEdit.clipId && <KeyEditSection />}
       <Section title={`Your clips (${clips.length})`}>
         {clips.length === 0 && <p>No clips yet. Start with the essentials:</p>}
         {clips.length === 0 && (
@@ -71,6 +117,7 @@ export function AnimatePanel() {
                 ▶
               </button>
               <input className="name" value={c.name} aria-label="Clip name" onChange={(e) => updateClip(c.id, { name: e.target.value })} />
+              <button className={`btn small ghost${keyEdit.clipId === c.id ? ' active' : ''}`} title="Edit keyframes" aria-label={`Edit keys of ${c.name}`} onClick={() => (keyEdit.clipId === c.id ? stopKeyEdit() : startKeyEdit(c.id))}>◆</button>
               <button className="btn small ghost" title="Mirror left/right" onClick={() => mirror(c.id)}>⇋</button>
               <button className="btn small ghost" title="Remove" onClick={() => removeClip(c.id)} aria-label={`Remove ${c.name}`}>✕</button>
             </div>
@@ -86,9 +133,15 @@ export function AnimatePanel() {
             <div className="src">{c.source} · {((c.normalized.frames - 1) / c.normalized.fps).toFixed(1)} s source</div>
           </div>
         ))}
-        <FilePicker className="btn" accept=".fbx,.bvh,.glb,.gltf" multiple onFiles={(f) => void addImported(f)}>
-          Import clip (Mixamo FBX, BVH, GLB)…
-        </FilePicker>
+        <div className="grid2">
+          <FilePicker className="btn" accept=".fbx,.bvh,.glb,.gltf" multiple onFiles={(f) => void addImported(f)}>
+            Import clip…
+          </FilePicker>
+          <button className="btn" onClick={() => newClip(2)} title="Pose a new clip from scratch with keyframes">
+            + Keyframe clip
+          </button>
+        </div>
+        <p className="footer-note">Import Mixamo FBX, BVH or GLB animations; they're retargeted automatically.</p>
       </Section>
 
       <Section title="Preset library">

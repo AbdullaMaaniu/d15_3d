@@ -2,6 +2,17 @@ import { create } from 'zustand';
 import { AnimationClip, BufferGeometry, Quaternion, Vector3, type Object3D, type SkinnedMesh } from 'three';
 import {
   alignHeading,
+  applyKeyLayer,
+  bindPoseClip,
+  deleteKeys,
+  emptyKeyLayer,
+  rigHipsToNormalized,
+  rigLocalToNormalized,
+  sampleNormalized,
+  sampleNormalizedHips,
+  setBoneKey,
+  setHipsKey,
+  type KeyLayer,
   applyBrush,
   createPaintContext,
   restoreWeights,
@@ -55,7 +66,16 @@ export interface ClipEntry {
   speed: number;
   /** Trim in/out points in seconds of the source clip. */
   trim?: [number, number];
+  /** Hand-authored keys layered over the (trimmed) clip. */
+  keys?: KeyLayer;
   baked: AnimationClip;
+}
+
+export interface KeyEditState {
+  clipId: string | null;
+  bone: string | null;
+  mode: 'rotate' | 'translate';
+  autoKey: boolean;
 }
 
 export interface PaintSettings {
@@ -116,6 +136,7 @@ interface State {
   selectedBone: string | null;
 
   paint: PaintSettings;
+  keyEdit: KeyEditState;
   /** Bumped whenever skin weights change, so views refresh. */
   weightsVersion: number;
   paintUndo: number;
@@ -159,6 +180,13 @@ interface Actions {
   undoPaint(): void;
   pickBoneAt(point: [number, number, number]): void;
   saveProjectFile(): Promise<void>;
+  startKeyEdit(id: string): void;
+  stopKeyEdit(): void;
+  newClip(seconds: number): void;
+  setKeyEdit(patch: Partial<KeyEditState>): void;
+  keyCurrentPose(bone?: string): void;
+  deleteKeyAt(time: number, bone?: string): void;
+  setClipKeys(id: string, keys: KeyLayer | undefined): void;
   openProject(blob: Blob): Promise<void>;
 }
 
@@ -176,7 +204,7 @@ function trimmed(entry: Omit<ClipEntry, 'baked'>): NormalizedClip {
 }
 
 function bake(binding: SkeletonBinding, entry: Omit<ClipEntry, 'baked'>): AnimationClip {
-  const clip = bakeClip(binding, { ...trimmed(entry), loop: entry.loop }, { inPlace: entry.inPlace, name: entry.name });
+  const clip = bakeClip(binding, { ...applyKeyLayer(trimmed(entry), entry.keys), loop: entry.loop }, { inPlace: entry.inPlace, name: entry.name });
   clip.userData = { rigforge: { loop: entry.loop, inPlace: entry.inPlace, speed: entry.speed } };
   return clip;
 }
@@ -215,6 +243,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   showFingerMarkers: false,
   selectedBone: null,
   paint: { active: false, mode: 'add', radius: 0.06, strength: 0.35, mirror: true },
+  keyEdit: { clipId: null, bone: null, mode: 'rotate', autoKey: true },
   weightsVersion: 0,
   paintUndo: 0,
   exportName: 'character',
@@ -226,7 +255,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
 
   goto(step) {
     const i = STEPS.indexOf(step);
-    if (i <= get().unlocked) set({ step, paint: { ...get().paint, active: false } });
+    if (i <= get().unlocked) set({ step, paint: { ...get().paint, active: false }, keyEdit: { ...get().keyEdit, clipId: null } });
   },
 
   async loadFromFiles(files) {
@@ -452,6 +481,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   },
 
   removeClip(id) {
+    if (get().keyEdit.clipId === id) get().stopKeyEdit();
     const clips = get().clips.filter((c) => c.id !== id);
     set({ clips, activeClip: get().activeClip === id ? clips[0]?.id ?? null : get().activeClip });
   },
@@ -529,6 +559,59 @@ export const useStore = create<State & Actions>()((set, get) => ({
     set({ selectedBone: pc.mesh.skeleton.bones[si.getComponent(best, k)].name });
   },
 
+  startKeyEdit(id) {
+    set({ keyEdit: { ...get().keyEdit, clipId: id, bone: get().keyEdit.bone ?? 'leftUpperArm' }, activeClip: id, playing: false, testClip: null, paint: { ...get().paint, active: false }, showSkeleton: true });
+  },
+
+  stopKeyEdit() {
+    set({ keyEdit: { ...get().keyEdit, clipId: null } });
+  },
+
+  newClip(seconds) {
+    const binding = get().binding;
+    if (!binding) return;
+    const names = new Set(get().clips.map((c) => c.name));
+    let name = 'New Clip';
+    for (let i = 2; names.has(name); i++) name = `New Clip ${i}`;
+    const entry = { id: `c${++clipCounter}`, name, source: 'Keyframed', normalized: bindPoseClip(binding, seconds, 30, name), loop: false, inPlace: false, speed: 1, keys: emptyKeyLayer() };
+    set({ clips: [...get().clips, { ...entry, baked: bake(binding, entry) }], time: 0, seek: 0 });
+    get().startKeyEdit(entry.id);
+  },
+
+  setKeyEdit(patch) {
+    set({ keyEdit: { ...get().keyEdit, ...patch } });
+  },
+
+  keyCurrentPose(boneName) {
+    const { binding, keyEdit, clips, time, character } = get();
+    const bone = boneName ?? keyEdit.bone;
+    const entry = clips.find((c) => c.id === keyEdit.clipId);
+    const node = bone && binding?.map[bone] ? character?.root.getObjectByName(binding.map[bone]) : undefined;
+    if (!binding || !entry || !bone || !node) return;
+    const base = trimmed(entry);
+    const t = Math.round(time * base.fps) / base.fps;
+    let keys = entry.keys ?? emptyKeyLayer();
+    const qn = rigLocalToNormalized(binding, bone, node.quaternion);
+    const offset = sampleNormalized(base, bone, t).invert().multiply(qn);
+    keys = setBoneKey(keys, bone, t, offset);
+    if (bone === 'hips') keys = setHipsKey(keys, t, rigHipsToNormalized(binding, node.position).sub(sampleNormalizedHips(base, t)));
+    get().setClipKeys(entry.id, keys);
+    set({ time: t, seek: t });
+  },
+
+  deleteKeyAt(time, bone) {
+    const entry = get().clips.find((c) => c.id === get().keyEdit.clipId);
+    if (!entry?.keys) return;
+    get().setClipKeys(entry.id, deleteKeys(entry.keys, time, bone));
+    set({ seek: time });
+  },
+
+  setClipKeys(id, keys) {
+    const binding = get().binding;
+    if (!binding) return;
+    set({ clips: get().clips.map((c) => (c.id === id ? { ...c, keys, baked: bake(binding, { ...c, keys }) } : c)) });
+  },
+
   async saveProjectFile() {
     try {
       const blob = await saveProject(get());
@@ -557,7 +640,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   },
 
   play(id) {
-    set({ activeClip: id, playing: id !== null, testClip: null });
+    set({ activeClip: id, playing: id !== null, testClip: null, keyEdit: { ...get().keyEdit, clipId: get().keyEdit.clipId === id ? id : null } });
   },
   setPlaying: (playing) => set({ playing }),
   setTime: (time) => set({ time }),
