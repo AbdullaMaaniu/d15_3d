@@ -26,6 +26,10 @@ test('sample mannequin: import → rig → animate → export', async ({ page })
 
   await page.getByRole('button', { name: 'Build rig' }).click();
   await expect(page.getByRole('heading', { name: 'Rig ready' })).toBeVisible();
+  // Geodesic distances ran on the worker pool when the machine has cores to spare.
+  const rig = await page.evaluate(() => ({ timings: (window as any).rigforge.getState().rigTimings, cores: navigator.hardwareConcurrency }));
+  console.log('rig timings', JSON.stringify(rig));
+  if (rig.cores >= 3) expect(rig.timings.threads).toBeGreaterThan(1);
   await page.waitForTimeout(1200);
   if (shots) await page.screenshot({ path: `${shots}/4-rigged.png` });
 

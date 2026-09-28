@@ -81,7 +81,8 @@ function HumanoidRigPanel() {
           </select>
           {timings && (
             <p className="footer-note">
-              Rigged in {(timings.total / 1000).toFixed(1)} s using the {kernel === 'wasm' ? 'Rust/WASM' : 'TypeScript'} kernel.
+              Rigged in {(timings.total / 1000).toFixed(1)} s using the {kernel === 'wasm' ? 'Rust/WASM' : 'TypeScript'} kernel
+              {timings.threads > 1 ? ` on ${timings.threads} threads` : ''}.
             </p>
           )}
         </Section>

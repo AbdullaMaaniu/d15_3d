@@ -13,6 +13,11 @@ export interface GeodesicInput {
   points: Float32Array;
   /** Distances beyond this are reported as Infinity (speeds up the search). */
   maxDistance: number;
+  /**
+   * Only compute bones in [start, end); other columns stay Infinity. Lets callers
+   * split the work across workers. Default: all bones.
+   */
+  bones?: [number, number];
 }
 
 /**
@@ -23,7 +28,7 @@ export interface GeodesicInput {
  * Geodesic distances through the volume stop weights from leaking across gaps,
  * e.g. from the thigh to the hand resting on it (Dionne & de Lasa 2013).
  */
-export function boneDistancesTS({ grid, boneCount, segments, points, maxDistance }: GeodesicInput): Float32Array {
+export function boneDistancesTS({ grid, boneCount, segments, points, maxDistance, bones }: GeodesicInput): Float32Array {
   const { nx, ny, nz, dx, data, origin } = grid;
   const total = nx * ny * nz;
   const sxy = nx * ny;
@@ -46,7 +51,7 @@ export function boneDistancesTS({ grid, boneCount, segments, points, maxDistance
         if (!x && !y && !z) continue;
         offs.push(x + nx * (y + ny * z));
         dxs.push(x); dys.push(y); dzs.push(z);
-        lens.push(Math.sqrt(x * x + y * y + z * z) * dx);
+        lens.push(Math.fround(Math.fround(Math.sqrt(x * x + y * y + z * z)) * Math.fround(dx)));
       }
 
   // Vertex -> nearest solid voxel (compact id) and residual distance.
@@ -78,7 +83,8 @@ export function boneDistancesTS({ grid, boneCount, segments, points, maxDistance
   const heap = new MinHeap(solidCount * 2 + 16);
   const segCount = segments.length / 7;
 
-  for (let bone = 0; bone < boneCount; bone++) {
+  const [b0, b1] = bones ?? [0, boneCount];
+  for (let bone = b0; bone < Math.min(b1, boneCount); bone++) {
     dist.fill(Infinity);
     heap.clear();
     // Seed voxels along each segment of this bone.
@@ -124,7 +130,10 @@ export function boneDistancesTS({ grid, boneCount, segments, points, maxDistance
         if (x2 < 0 || y2 < 0 || z2 < 0 || x2 >= nx || y2 >= ny || z2 >= nz) continue;
         const c2 = compact[i + offs[n]];
         if (c2 < 0) continue;
-        const nd = d + lens[n];
+        // Sum in f32 like the stored distances (and the Rust kernel). A float64 sum that
+        // is smaller only before rounding would re-queue the voxel with an unchanged
+        // distance, over and over.
+        const nd = Math.fround(d + lens[n]);
         if (nd < dist[c2]) {
           dist[c2] = nd;
           heap.push(nd, c2);

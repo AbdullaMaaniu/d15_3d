@@ -1011,6 +1011,12 @@ export const useStore = create<State & Actions>()((set, get) => ({
   },
 
   async openProject(blob) {
+    // A model picked through "Open" (not a .rigforge project) starts a fresh import instead.
+    const name = (blob as File).name ?? '';
+    if (/\.(glb|gltf|fbx|obj)$/i.test(name)) {
+      set({ step: 'import' });
+      return get().loadFromFiles([blob as File]);
+    }
     set({ busy: 'Opening project…', error: null });
     try {
       const patch = await loadProject(blob, (entry, binding) => bake(binding, entry));

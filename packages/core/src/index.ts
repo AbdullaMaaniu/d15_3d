@@ -2,7 +2,7 @@ export * from './skeleton';
 export * from './kernels';
 export type { VoxelGrid } from './voxel/grid';
 export { voxelizeTS } from './voxel/voxelize';
-export { boneDistancesTS } from './voxel/geodesic';
+export { boneDistancesTS, type GeodesicInput } from './voxel/geodesic';
 
 export { mergeSceneMeshes, toStandardMaterial, type PreparedMesh } from './mesh/merge';
 export { analyzeMesh, removeDegenerateTriangles, weldByPosition, type MeshReport, type TextureInfo } from './mesh/analyze';
@@ -11,7 +11,7 @@ export { createMannequin, type MannequinOptions } from './mesh/mannequin';
 
 export { detectHumanoid, symmetrizeJoints, type DetectOptions, type DetectResult } from './rig/landmarks';
 export { detectFingers, type FingerDetection } from './rig/fingers';
-export { computeSkinWeights, boneSegments, type SkinWeights, type WeightOptions } from './rig/weights';
+export { computeSkinWeights, computeSkinWeightsAsync, boneSegments, type SkinWeights, type WeightOptions } from './rig/weights';
 export { buildSkinnedCharacter, resetPose, type RiggedCharacter } from './rig/build';
 
 export { autoMapBones, normalizeBoneName, type BoneMap, type BoneMapResult } from './anim/bonemap';

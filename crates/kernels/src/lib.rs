@@ -341,6 +341,281 @@ pub fn bone_distances(grid: &Grid, bone_count: usize, segments: &[f32], points: 
     out
 }
 
+/// Monotone priority queue for Dijkstra (a radix heap): keys are the bit patterns
+/// of non-negative f32 distances, which sort like the floats. Pushes must not be
+/// smaller than the last popped key, which Dijkstra guarantees.
+struct RadixHeap {
+    buckets: Vec<Vec<u64>>,
+    last: u32,
+    len: usize,
+}
+
+impl RadixHeap {
+    fn new() -> Self {
+        RadixHeap { buckets: (0..33).map(|_| Vec::new()).collect(), last: 0, len: 0 }
+    }
+    fn clear(&mut self) {
+        for b in &mut self.buckets {
+            b.clear();
+        }
+        self.last = 0;
+        self.len = 0;
+    }
+    #[inline(always)]
+    fn bucket(&self, key: u32) -> usize {
+        (32 - (key ^ self.last).leading_zeros()) as usize
+    }
+    #[inline(always)]
+    fn push(&mut self, key: f32, value: u32) {
+        let k = key.to_bits();
+        let b = self.bucket(k);
+        self.buckets[b].push(((k as u64) << 32) | value as u64);
+        self.len += 1;
+    }
+    fn pop(&mut self) -> Option<(f32, u32)> {
+        if self.len == 0 {
+            return None;
+        }
+        if self.buckets[0].is_empty() {
+            let i = (1..33).find(|&i| !self.buckets[i].is_empty()).unwrap();
+            let items = std::mem::take(&mut self.buckets[i]);
+            self.last = items.iter().map(|e| (e >> 32) as u32).min().unwrap();
+            for e in &items {
+                let b = self.bucket((e >> 32) as u32);
+                self.buckets[b].push(*e);
+            }
+            // Hand the allocation back so the bucket doesn't reallocate next time.
+            let mut items = items;
+            items.clear();
+            self.buckets[i] = items;
+        }
+        self.len -= 1;
+        let e = self.buckets[0].pop().unwrap();
+        Some((f32::from_bits((e >> 32) as u32), e as u32))
+    }
+}
+
+/// Geodesic distances for one grid, computed one bone at a time.
+///
+/// Same results as [`bone_distances`], restructured for speed: the grid border is
+/// cleared so the 26 neighbours of a solid voxel are always in bounds, empty voxels
+/// hold -inf so one comparison rejects them, the queue is a radix heap, and per-bone
+/// state is reset only where it was touched. Setting up once and then asking for
+/// bones individually lets several workers share the bones of one model.
+pub struct GeodesicSession {
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    dx: f32,
+    origin: [f32; 3],
+    data: Vec<u8>,
+    dist: Vec<f32>,
+    offs: [isize; 26],
+    lens: [f32; 26],
+    segments: Vec<f32>,
+    pt_voxel: Vec<u32>,
+    pt_residual: Vec<f32>,
+    max_distance: f32,
+    touched: Vec<u32>,
+    heap: RadixHeap,
+}
+
+impl GeodesicSession {
+    pub fn new(grid: Grid, segments: &[f32], points: &[f32], max_distance: f32) -> Self {
+        let Grid { origin: o, dx, nx, ny, nz, data } = grid;
+        let total = nx * ny * nz;
+        let inv = 1.0 / dx;
+        // dist: +inf for solid voxels (not reached yet), -inf for empty ones and the border.
+        let mut dist = vec![f32::NEG_INFINITY; total];
+        if nx >= 3 && ny >= 3 && nz >= 3 {
+            for z in 1..nz - 1 {
+                for y in 1..ny - 1 {
+                    let row = nx * (y + ny * z);
+                    for x in 1..nx - 1 {
+                        if data[row + x] != EMPTY {
+                            dist[row + x] = f32::INFINITY;
+                        }
+                    }
+                }
+            }
+        }
+        let mut offs = [0isize; 26];
+        let mut lens = [0f32; 26];
+        let mut k = 0;
+        for z in -1i32..=1 {
+            for y in -1i32..=1 {
+                for x in -1i32..=1 {
+                    if x == 0 && y == 0 && z == 0 {
+                        continue;
+                    }
+                    offs[k] = x as isize + nx as isize * (y as isize + ny as isize * z as isize);
+                    lens[k] = (((x * x + y * y + z * z) as f32).sqrt()) * dx;
+                    k += 1;
+                }
+            }
+        }
+        // Vertex -> nearest solid voxel and residual distance (same search as the reference).
+        let n_pts = points.len() / 3;
+        let mut pt_voxel = vec![u32::MAX; n_pts];
+        let mut pt_residual = vec![0f32; n_pts];
+        for p in 0..n_pts {
+            let (px, py, pz) = (points[p * 3], points[p * 3 + 1], points[p * 3 + 2]);
+            let vx = ((px - o[0]) * inv).floor() as i64;
+            let vy = ((py - o[1]) * inv).floor() as i64;
+            let vz = ((pz - o[2]) * inv).floor() as i64;
+            let mut best = u32::MAX;
+            let mut best_d = f32::INFINITY;
+            let mut r = 0i64;
+            while r <= 2 && best == u32::MAX {
+                for z in vz - r..=vz + r {
+                    for y in vy - r..=vy + r {
+                        for x in vx - r..=vx + r {
+                            if x < 0 || y < 0 || z < 0 || x >= nx as i64 || y >= ny as i64 || z >= nz as i64 {
+                                continue;
+                            }
+                            let i = x as usize + nx * (y as usize + ny * z as usize);
+                            if data[i] == EMPTY {
+                                continue;
+                            }
+                            let cx = o[0] + (x as f32 + 0.5) * dx;
+                            let cy = o[1] + (y as f32 + 0.5) * dx;
+                            let cz = o[2] + (z as f32 + 0.5) * dx;
+                            let d = ((px - cx).powi(2) + (py - cy).powi(2) + (pz - cz).powi(2)).sqrt();
+                            if d < best_d {
+                                best_d = d;
+                                best = i as u32;
+                            }
+                        }
+                    }
+                }
+                r += 1;
+            }
+            pt_voxel[p] = best;
+            pt_residual[p] = if best != u32::MAX { best_d } else { 0.0 };
+        }
+        GeodesicSession {
+            nx, ny, nz, dx, origin: o, data, dist, offs, lens,
+            segments: segments.to_vec(), pt_voxel, pt_residual, max_distance,
+            touched: Vec::new(), heap: RadixHeap::new(),
+        }
+    }
+
+    pub fn point_count(&self) -> usize {
+        self.pt_voxel.len()
+    }
+
+    /// Distances from every point to `bone`, written to `out[p * stride]`.
+    pub fn bone(&mut self, bone: usize, out: &mut [f32], stride: usize) {
+        let n_pts = self.pt_voxel.len();
+        for p in 0..n_pts {
+            out[p * stride] = f32::INFINITY;
+        }
+        let (nx, ny, nz, dx, o) = (self.nx, self.ny, self.nz, self.dx, self.origin);
+        if nx < 3 || ny < 3 || nz < 3 || nx * ny * nz > u32::MAX as usize {
+            return;
+        }
+        let inv = 1.0 / dx;
+        let (offs, lens, max_distance) = (self.offs, self.lens, self.max_distance);
+        let dist = &mut self.dist;
+        let touched = &mut self.touched;
+        let heap = &mut self.heap;
+        for &t in touched.iter() {
+            dist[t as usize] = f32::INFINITY;
+        }
+        touched.clear();
+        heap.clear();
+        let segments = &self.segments;
+        for s in 0..segments.len() / 7 {
+            if segments[s * 7] as usize != bone {
+                continue;
+            }
+            let a = [segments[s * 7 + 1], segments[s * 7 + 2], segments[s * 7 + 3]];
+            let b = [segments[s * 7 + 4], segments[s * 7 + 5], segments[s * 7 + 6]];
+            let len = dist3(&a, &b);
+            let steps = ((len / (dx * 0.5)).ceil() as usize).max(1);
+            for kk in 0..=steps {
+                let t = kk as f32 / steps as f32;
+                let vx = ((a[0] + (b[0] - a[0]) * t - o[0]) * inv).floor() as i64;
+                let vy = ((a[1] + (b[1] - a[1]) * t - o[1]) * inv).floor() as i64;
+                let vz = ((a[2] + (b[2] - a[2]) * t - o[2]) * inv).floor() as i64;
+                if vx < 1 || vy < 1 || vz < 1 || vx >= nx as i64 - 1 || vy >= ny as i64 - 1 || vz >= nz as i64 - 1 {
+                    continue;
+                }
+                let i = vx as usize + nx * (vy as usize + ny * vz as usize);
+                if dist[i] >= 0.0 {
+                    if dist[i] > 0.0 {
+                        if dist[i] == f32::INFINITY {
+                            touched.push(i as u32);
+                        }
+                        dist[i] = 0.0;
+                        heap.push(0.0, i as u32);
+                    }
+                } else if self.data[i] == EMPTY {
+                    // Seed passes through empty space (bone slightly outside the mesh): seed solid neighbours.
+                    for n in 0..26 {
+                        let j = (i as isize + offs[n]) as usize;
+                        if lens[n] < dist[j] {
+                            if dist[j] == f32::INFINITY {
+                                touched.push(j as u32);
+                            }
+                            dist[j] = lens[n];
+                            heap.push(lens[n], j as u32);
+                        }
+                    }
+                }
+            }
+        }
+        while let Some((d, i)) = heap.pop() {
+            let i = i as usize;
+            // SAFETY: only solid voxels are queued; they are at least one voxel inside
+            // the grid, so i + offs[n] is in bounds for every neighbour offset.
+            unsafe {
+                if d > *dist.get_unchecked(i) {
+                    continue;
+                }
+                if d > max_distance {
+                    break;
+                }
+                for n in 0..26 {
+                    let j = (i as isize + *offs.get_unchecked(n)) as usize;
+                    let nd = d + *lens.get_unchecked(n);
+                    let dj = dist.get_unchecked_mut(j);
+                    if nd < *dj {
+                        if *dj == f32::INFINITY {
+                            touched.push(j as u32);
+                        }
+                        *dj = nd;
+                        heap.push(nd, j as u32);
+                    }
+                }
+            }
+        }
+        for p in 0..n_pts {
+            let v = self.pt_voxel[p];
+            if v == u32::MAX {
+                continue;
+            }
+            let d = dist[v as usize];
+            if d >= 0.0 && d <= max_distance {
+                out[p * stride] = d + self.pt_residual[p];
+            }
+        }
+    }
+}
+
+/// All-bones convenience over [`GeodesicSession`]: only bones in `bones` are
+/// computed (their columns of the `[point * bone_count + bone]` output; the rest stay +inf).
+pub fn bone_distances_fast(grid: &Grid, bone_count: usize, bones: std::ops::Range<usize>, segments: &[f32], points: &[f32], max_distance: f32) -> Vec<f32> {
+    let n_pts = points.len() / 3;
+    let mut out = vec![f32::INFINITY; n_pts * bone_count];
+    let grid = Grid { origin: grid.origin, dx: grid.dx, nx: grid.nx, ny: grid.ny, nz: grid.nz, data: grid.data.clone() };
+    let mut session = GeodesicSession::new(grid, segments, points, max_distance);
+    for bone in bones.start..bones.end.min(bone_count) {
+        session.bone(bone, &mut out[bone..], bone_count);
+    }
+    out
+}
+
 fn dist3(a: &[f32; 3], b: &[f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
@@ -397,14 +672,55 @@ pub extern "C" fn rf_bone_distances(
     pts: *const f32,
     n_pts: usize,
     max_distance: f32,
+    bone_start: usize,
+    bone_end: usize,
     out: *mut f32,
 ) {
     let data = unsafe { std::slice::from_raw_parts(grid_data, nx * ny * nz) }.to_vec();
     let grid = Grid { origin: [ox, oy, oz], dx, nx, ny, nz, data };
     let segments = unsafe { std::slice::from_raw_parts(segs, seg_count * 7) };
     let points = unsafe { std::slice::from_raw_parts(pts, n_pts * 3) };
-    let result = bone_distances(&grid, bone_count, segments, points, max_distance);
+    let result = bone_distances_fast(&grid, bone_count, bone_start..bone_end, segments, points, max_distance);
     unsafe { std::ptr::copy_nonoverlapping(result.as_ptr(), out, result.len()) };
+}
+
+/// Starts a geodesic session (copies what it needs; the inputs can be freed after).
+#[no_mangle]
+pub extern "C" fn rf_geo_new(
+    grid_data: *const u8,
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    ox: f32,
+    oy: f32,
+    oz: f32,
+    dx: f32,
+    segs: *const f32,
+    seg_count: usize,
+    pts: *const f32,
+    n_pts: usize,
+    max_distance: f32,
+) -> *mut GeodesicSession {
+    let data = unsafe { std::slice::from_raw_parts(grid_data, nx * ny * nz) }.to_vec();
+    let segments = unsafe { std::slice::from_raw_parts(segs, seg_count * 7) };
+    let points = unsafe { std::slice::from_raw_parts(pts, n_pts * 3) };
+    let grid = Grid { origin: [ox, oy, oz], dx, nx, ny, nz, data };
+    Box::into_raw(Box::new(GeodesicSession::new(grid, segments, points, max_distance)))
+}
+
+/// Writes one bone's distance to each point (n_pts floats) into `out`.
+#[no_mangle]
+pub extern "C" fn rf_geo_bone(session: *mut GeodesicSession, bone: usize, out: *mut f32) {
+    let s = unsafe { &mut *session };
+    let out = unsafe { std::slice::from_raw_parts_mut(out, s.point_count()) };
+    s.bone(bone, out, 1);
+}
+
+#[no_mangle]
+pub extern "C" fn rf_geo_free(session: *mut GeodesicSession) {
+    if !session.is_null() {
+        drop(unsafe { Box::from_raw(session) });
+    }
 }
 
 #[cfg(test)]
@@ -439,5 +755,39 @@ mod tests {
         let d = bone_distances(&g, 1, &segs, &pts, 10.0);
         assert!(d[0] < d[1]);
         assert!((d[1] - 0.7).abs() < 0.1);
+    }
+
+    #[test]
+    fn fast_kernel_matches_reference() {
+        // A lumpy solid: a cube with a second cube attached, several bones, points everywhere.
+        let (p, i) = cube();
+        let mut pos = p.clone();
+        pos.extend(p.iter().enumerate().map(|(k, v)| if k % 3 == 0 { v + 0.9 } else { v * 0.5 }));
+        let mut idx = i.clone();
+        idx.extend(i.iter().map(|v| v + 8));
+        let g = voxelize(&pos, Some(&idx), 0.043, 2);
+        let segs = [
+            0.0, 0.5, 0.1, 0.5, 0.5, 0.9, 0.5, //
+            1.0, 0.2, 0.5, 0.5, 0.8, 0.5, 0.5, //
+            1.0, 0.8, 0.5, 0.5, 1.6, 0.25, 0.25, //
+            2.0, 1.5, 0.2, 0.2, 1.5, 0.2, 0.2, //
+            3.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, // outside the grid: never seeded
+        ];
+        let mut pts = Vec::new();
+        for k in 0..400 {
+            let t = k as f32 / 400.0;
+            pts.extend([t * 1.9, (t * 7.0).fract(), (t * 13.0).fract()]);
+        }
+        let reference = bone_distances(&g, 4, &segs, &pts, 1.2);
+        let fast = bone_distances_fast(&g, 4, 0..4, &segs, &pts, 1.2);
+        assert_eq!(reference.len(), fast.len());
+        for (a, b) in reference.iter().zip(&fast) {
+            assert!(a == b || (a.is_infinite() && b.is_infinite()), "{a} vs {b}");
+        }
+        // A bone range fills only its columns.
+        let part = bone_distances_fast(&g, 4, 1..3, &segs, &pts, 1.2);
+        for (k, (a, b)) in reference.iter().zip(&part).enumerate() {
+            if (1..3).contains(&(k % 4)) { assert!(a == b || a.is_infinite() && b.is_infinite()); } else { assert!(b.is_infinite()); }
+        }
     }
 }

@@ -71,7 +71,7 @@ export function App() {
         <div className="spacer" />
         {report && <span className="meta">{report.triangles.toLocaleString()} tris</span>}
         <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}>
-          <FilePicker className="btn small" accept=".rigforge,application/gzip,application/json" onFiles={(f) => void openProject(f[0])}>
+          <FilePicker className="btn small" accept=".rigforge,application/gzip,application/json,.glb,.gltf,.fbx,.obj" onFiles={(f) => void openProject(f[0])}>
             Open
           </FilePicker>
           <button className="btn small" disabled={!hasModel} onClick={() => void saveProjectFile()} title="Download a .rigforge project file">

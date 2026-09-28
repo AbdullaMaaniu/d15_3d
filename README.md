@@ -116,7 +116,7 @@ Exported files are standard glTF 2.0, so plain `GLTFLoader` + `AnimationMixer` w
 - **Voxelization**: triangles are rasterized into a voxel grid, closed morphologically, and flood-filled from outside to get a solid volume even when the mesh has holes.
 - **Joint detection** reads the front silhouette and cross-sections of that volume. It finds the crotch gap, traces each arm from the fingertips to the armpit, finds the neck as the narrowest section below the head, and finds the ankles where the foot's depth drops. Joints are placed on the volume's centerlines.
 - **Fingers**: the hand is sliced across its length at millimeter resolution, and the slices with four separate runs of geometry are the fingers. Knuckles are where the runs merge into the palm, and the thumb is the geometry beyond the palm's edge. Fused "mitten" hands get finger bones placed from hand proportions.
-- **Skin weights**: for every bone, a Dijkstra search through the solid voxels measures the distance *through the body* to each vertex, so the hand resting on a thigh doesn't get thigh weights. Weights fall off as 1/dᵏ, are smoothed over the surface, and are limited to 4 influences.
+- **Skin weights**: for every bone, a Dijkstra search through the solid voxels measures the distance *through the body* to each vertex, so the hand resting on a thigh doesn't get thigh weights. Weights fall off as 1/dᵏ, are smoothed over the surface, and are limited to 4 influences. The Rust kernel uses a radix heap over the distances' f32 bit patterns and a border-padded grid with no bounds checks, and the editor splits the bones across a pool of workers. The result is bit-identical to the single-threaded reference.
 - **Retargeting** converts every clip to a skeleton-independent "normalized T-pose" space (like VRM), so A-pose meshes, T-pose Mixamo clips and CMU BVH data all line up.
 
 ## Development
@@ -129,6 +129,9 @@ pnpm build           # packages (tsup) + editor (vite)
 pnpm build:wasm      # rebuild crates/kernels → packages/core/wasm (needs rustup target wasm32-unknown-unknown)
 pnpm build:presets   # rebuild presets from CMU BVH files (downloads to packages/presets/.cache)
 pnpm corpus          # rig every corpus/*.glb and write corpus/report.md
+pnpm tsx scripts/bench/profile.ts models/        # detect + weights timings per stage, WASM vs TypeScript
+pnpm tsx scripts/bench/dump-geodesic.ts a.glb a.bin && \
+  cargo run --release --manifest-path crates/kernels/Cargo.toml --example bench -- a.bin   # native kernel, 1/2/4 threads
 ```
 
 The compiled WASM module is committed, so JavaScript-only contributors don't need Rust.

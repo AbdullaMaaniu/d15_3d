@@ -3,10 +3,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createMannequin } from '../src/mesh/mannequin';
 import { detectHumanoid } from '../src/rig/landmarks';
-import { computeSkinWeights } from '../src/rig/weights';
+import { boneSegments, computeSkinWeights, computeSkinWeightsAsync } from '../src/rig/weights';
 import { buildSkinnedCharacter } from '../src/rig/build';
 import { humanoidDefs } from '../src/skeleton';
-import { createWasmKernels, tsKernels } from '../src/kernels';
+import { createWasmKernels, distancesFromSessions, tsKernels } from '../src/kernels';
 import { MeshStandardMaterial, Vector3 } from 'three';
 
 const wasmPath = fileURLToPath(new URL('../wasm/rigforge_kernels.wasm', import.meta.url));
@@ -26,6 +26,49 @@ describe('skin weights', async () => {
     let diff = 0;
     for (let i = 0; i < grid1.data.length; i++) if (grid1.data[i] !== grid2.data[i]) diff++;
     expect(diff / grid1.data.length).toBeLessThan(0.001);
+  });
+
+  it('ts and wasm geodesic distances agree, and bone ranges split the work', () => {
+    // dx = height / 192 is not representable in f32: the case that used to make the
+    // TS kernel re-queue voxels forever.
+    const dx = 1.8 / 192;
+    const grid = wasm.voxelize({ positions, index, dx });
+    const segments = boneSegments(defs, detected);
+    const points = positions.slice(0, 3 * 800);
+    const input = { grid, boneCount: defs.length, segments, points, maxDistance: 0.8 };
+    const a = wasm.boneDistances(input);
+    const b = tsKernels.boneDistances(input);
+    let worst = 0;
+    for (let i = 0; i < a.length; i++) {
+      expect(Number.isFinite(a[i])).toBe(Number.isFinite(b[i]));
+      if (Number.isFinite(a[i])) worst = Math.max(worst, Math.abs(a[i] - b[i]));
+    }
+    expect(worst).toBeLessThan(dx);
+    const half = Math.floor(defs.length / 2);
+    const lo = wasm.boneDistances({ ...input, bones: [0, half] });
+    const hi = wasm.boneDistances({ ...input, bones: [half, defs.length] });
+    for (let i = 0; i < a.length; i++) {
+      const merged = i % defs.length < half ? lo[i] : hi[i];
+      expect(merged).toBe(a[i]);
+      expect(i % defs.length < half ? hi[i] : lo[i]).toBe(Infinity);
+    }
+  });
+
+  it('parallel sessions give exactly the single-threaded weights', async () => {
+    const sync = computeSkinWeights(positions, index, defs, detected, { kernels: wasm, resolution: 128 });
+    let reported = 0;
+    const par = await computeSkinWeightsAsync(positions, index, defs, detected, async (input, onBone) => {
+      // Three "workers", each with its own session, pulling bones from one queue.
+      const sessions = [0, 1, 2].map(() => wasm.geodesicSession(input));
+      try {
+        return await distancesFromSessions(input, sessions.map((s) => async (b: number) => s.bone(b)), (done) => { reported = done; onBone(done); });
+      } finally {
+        for (const s of sessions) s.free();
+      }
+    }, { kernels: wasm, resolution: 128 });
+    expect(reported).toBe(defs.length);
+    expect(Array.from(par.skinIndex)).toEqual(Array.from(sync.skinIndex));
+    expect(Array.from(par.skinWeight)).toEqual(Array.from(sync.skinWeight));
   });
 
   it('binds vertices to the right bones', () => {
