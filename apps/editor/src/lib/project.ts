@@ -21,7 +21,8 @@ import {
   type CreatureBone,
   splitParts,
 } from '@rigforge/core';
-import type { ClipEntry, RigType, useStore } from '../store';
+import { accessoryDefs, type ClipEntry, type RigType, type useStore } from '../store';
+import type { SpringConfig } from '@rigforge/three';
 
 type StoreState = ReturnType<typeof useStore.getState>;
 
@@ -47,6 +48,8 @@ interface ProjectFile {
   rigType?: RigType;
   propRig?: PropRig | null;
   creatureBones?: CreatureBone[];
+  extraBones?: CreatureBone[];
+  springs?: SpringConfig;
   /** Whether the prop rig was built (props don't store weights: they're rigid). */
   propBuilt?: boolean;
 }
@@ -103,6 +106,8 @@ export async function saveProject(s: StoreState): Promise<Blob> {
     rigType: s.rigType,
     propRig: s.propRig,
     creatureBones: s.creatureBones,
+    extraBones: s.extraBones,
+    springs: s.springs,
     propBuilt: s.rigType === 'prop' && !!built,
     rig: built && s.rigType !== 'prop' && s.joints
       ? {
@@ -184,7 +189,13 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
   }
   const quadruped = file.rigType === 'quadruped';
   const creature = file.rigType === 'creature';
-  Object.assign(patch, { rigType: file.rigType ?? 'humanoid', creatureBones: file.creatureBones ?? [] });
+  Object.assign(patch, {
+    rigType: file.rigType ?? 'humanoid',
+    creatureBones: file.creatureBones ?? [],
+    extraBones: file.extraBones ?? [],
+    springs: file.springs ?? { chains: [], colliders: [] },
+  });
+  const baseDefs = (defs: readonly import('@rigforge/core').BoneDef[]) => [...defs, ...accessoryDefs(file.extraBones ?? [])];
 
   if (file.rig && file.joints) {
     const si = b64.decode(file.rig.skinIndex);
@@ -192,7 +203,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     const skinIndex = new Uint16Array(si.buffer, si.byteOffset, si.byteLength / 2);
     const skinWeight = new Float32Array(sw.buffer, sw.byteOffset, sw.byteLength / 4);
     if (quadruped || creature) {
-      const defs = creature ? creatureDefs(file.creatureBones ?? []) : QUADRUPED_DEFS;
+      const defs = creature ? creatureDefs(file.creatureBones ?? []) : baseDefs(QUADRUPED_DEFS);
       const built = buildSkinnedCharacter(normalizedGeometry, materials, defs, file.joints, skinIndex, skinWeight, creature ? 'Creature' : 'Animal');
       Object.assign(patch, {
         character: { root: built.root, built },
@@ -203,7 +214,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
       (patch as any).pendingPropClips = file.clips;
       return patch;
     }
-    const built = buildSkinnedCharacter(normalizedGeometry, materials, humanoidDefs(file.fingers), file.joints, skinIndex, skinWeight, 'Character');
+    const built = buildSkinnedCharacter(normalizedGeometry, materials, baseDefs(humanoidDefs(file.fingers)), file.joints, skinIndex, skinWeight, 'Character');
     const binding = bindSkeleton(built.root, autoMapBones(built.root).map);
     const clips: ClipEntry[] = file.clips.map((c, i) => {
       const entry = { id: `p${Date.now().toString(36)}${i}`, name: c.name, source: c.source, normalized: decodeClip(c.clip!), loop: c.loop, inPlace: c.inPlace, speed: c.speed, trim: c.trim, keys: c.keys };

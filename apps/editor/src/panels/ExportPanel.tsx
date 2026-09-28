@@ -31,6 +31,9 @@ export function ExportPanel() {
         if (o.isSkinnedMesh) o.skeleton.pose();
       });
       character.root.updateMatrixWorld(true);
+      // Spring bones ride along as node extras; @rigforge/three sets them up on load.
+      const springs = useStore.getState().springs;
+      character.root.userData.rigforge = { ...(character.root.userData.rigforge ?? {}), springs: springs.chains.length ? springs : undefined };
       // Every clip at its chosen speed.
       const baked = clips.map((c) => {
         const clip = c.baked.clone();

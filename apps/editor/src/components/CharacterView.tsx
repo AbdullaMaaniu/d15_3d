@@ -20,6 +20,7 @@ import {
 } from 'three';
 import { useStore } from '../store';
 import { KeyEditor } from './KeyEditor';
+import { SpringBones } from '@rigforge/three';
 
 /** Hue per bone so the dominant-influence view reads as distinct regions. */
 function boneColor(i: number, out: Color): Color {
@@ -56,6 +57,14 @@ export function CharacterView() {
   const meshes = useMemo(() => skinnedMeshes(character.root), [character]);
   const original = useMemo(() => new Map(meshes.map((m) => [m, m.material])), [meshes]);
   const mixer = useMemo(() => new AnimationMixer(character.root), [character]);
+  const springConfig = useStore((s) => s.springs);
+  const springPreview = useStore((s) => s.springPreview && !s.paint.active && s.keyEdit.clipId === null);
+  const springs = useMemo(() => {
+    if (!springPreview || !springConfig.chains.length) return null;
+    // Start from the bind pose so rest directions are measured correctly.
+    meshes.forEach((m) => m.skeleton.pose());
+    return new SpringBones(character.root, springConfig);
+  }, [character, springConfig, springPreview, meshes]);
   const current = useRef<AnimationAction | null>(null);
   const lastTimeUpdate = useRef(0);
 
@@ -112,6 +121,7 @@ export function CharacterView() {
 
   useFrame((_, delta) => {
     if (playing) mixer.update(Math.min(delta, 0.1));
+    springs?.update(Math.min(delta, 0.1));
     const now = performance.now();
     if (current.current && now - lastTimeUpdate.current > 100) {
       lastTimeUpdate.current = now;

@@ -10,8 +10,18 @@ import { JointEditor } from './JointEditor';
  * and exits the surface.
  */
 export function CreatureEditor() {
-  const normalized = useStore((s) => s.normalized);
   const addCreatureJoint = useStore((s) => s.addCreatureJoint);
+  return (
+    <>
+      <InteriorClickMesh onPlace={addCreatureJoint} />
+      <JointEditor />
+    </>
+  );
+}
+
+/** See-through mesh; clicking it reports the point inside the body under the cursor. */
+export function InteriorClickMesh({ onPlace }: { onPlace: (p: [number, number, number]) => void }) {
+  const normalized = useStore((s) => s.normalized);
   const materials = useMemo(
     () =>
       normalized?.materials.map((m) => {
@@ -35,14 +45,9 @@ export function CreatureEditor() {
     proxy.updateMatrixWorld(true);
     const exit = ray.intersectObject(proxy, false)[0]?.point;
     const inside = exit ? entry.clone().add(exit).multiplyScalar(0.5) : entry.clone().addScaledVector(dir, 0.02);
-    addCreatureJoint([inside.x, inside.y, inside.z]);
+    onPlace([inside.x, inside.y, inside.z]);
   };
 
-  return (
-    <>
-      <mesh geometry={normalized.geometry} material={materials} onClick={onClick} />
-      <JointEditor />
-    </>
-  );
+  return <mesh geometry={normalized.geometry} material={materials} onClick={onClick} />;
 }
 

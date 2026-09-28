@@ -7,7 +7,7 @@ import { computeNormalization } from '@rigforge/core';
 import { fitFor, useStore } from '../store';
 import { JointEditor } from './JointEditor';
 import { PropEditor } from './PropEditor';
-import { CreatureEditor } from './CreatureEditor';
+import { CreatureEditor, InteriorClickMesh } from './CreatureEditor';
 import { CharacterView } from './CharacterView';
 
 function RoomEnv() {
@@ -133,6 +133,8 @@ export function Viewport() {
   const hasModel = useStore((s) => !!s.prepared);
   const rigType = useStore((s) => s.rigType);
   const isProp = rigType === 'prop';
+  const accessoryMode = useStore((s) => s.accessoryMode);
+  const addAccessoryJoint = useStore((s) => s.addAccessoryJoint);
 
   return (
     <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 1.1, 3.8], fov: 38, near: 0.01, far: 200 }} gl={{ preserveDrawingBuffer: true }}>
@@ -153,7 +155,7 @@ export function Viewport() {
       {step === 'rig' && !character && rigType === 'creature' && <CreatureEditor />}
       {step === 'rig' && !character && !isProp && rigType !== 'creature' && (
         <>
-          <NormalizedView />
+          {accessoryMode ? <InteriorClickMesh onPlace={addAccessoryJoint} /> : <NormalizedView />}
           <JointEditor />
         </>
       )}

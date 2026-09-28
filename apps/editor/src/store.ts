@@ -71,6 +71,7 @@ import presetPack from '@rigforge/presets/clips.json';
 import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleCreature, loadSampleProp, type LoadedFile } from './lib/loaders';
 import { computeWeights, detectJoints, detectQuadrupedJoints, type WeightSettings } from './lib/rigClient';
 import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
+import type { SpringChainDef, SpringColliderDef, SpringConfig } from '@rigforge/three';
 
 export type Step = 'import' | 'orient' | 'rig' | 'animate' | 'export';
 export const STEPS: Step[] = ['import', 'orient', 'rig', 'animate', 'export'];
@@ -99,7 +100,19 @@ export type RigType = 'humanoid' | 'quadruped' | 'creature' | 'prop';
 export function skeletonDefs(): readonly BoneDef[] {
   const s = useStore.getState();
   if (s.rigType === 'creature') return creatureDefs(s.creatureBones);
-  return s.rigType === 'quadruped' ? QUADRUPED_DEFS : humanoidDefs(s.fingers);
+  const base = s.rigType === 'quadruped' ? QUADRUPED_DEFS : humanoidDefs(s.fingers);
+  return [...base, ...accessoryDefs(s.extraBones)];
+}
+
+/** Accessory chains (hair, capes, ears...) hang off template bones; parents come before children. */
+export function accessoryDefs(extra: CreatureBone[]): BoneDef[] {
+  return extra.map((b) => ({
+    name: b.name,
+    parent: b.parent,
+    primaryChild: extra.find((c) => c.parent === b.name)?.name ?? null,
+    side: b.name.startsWith('left') ? 'left' : b.name.startsWith('right') ? 'right' : null,
+    isFinger: false,
+  }));
 }
 
 export interface KeyEditState {
@@ -152,6 +165,11 @@ interface State {
 
   rigType: RigType;
   creatureBones: CreatureBone[];
+  /** Accessory bones added to a humanoid/quadruped rig (hair, capes, tails, ears). */
+  extraBones: CreatureBone[];
+  accessoryMode: boolean;
+  springs: SpringConfig;
+  springPreview: boolean;
   propSplit: PartSplit | null;
   propRig: PropRig | null;
 
@@ -235,6 +253,11 @@ interface Actions {
   removeCreatureBone(name: string): void;
   renameCreatureBone(name: string, next: string): void;
   mirrorCreatureBone(name: string): void;
+  addAccessoryJoint(p: [number, number, number]): void;
+  removeAccessoryChain(name: string): void;
+  setSpringChain(index: number, patch: Partial<SpringChainDef>): void;
+  addSpringChain(startBone: string): void;
+  removeSpringChain(index: number): void;
   openProject(blob: Blob): Promise<void>;
 }
 
@@ -301,6 +324,10 @@ export const useStore = create<State & Actions>()((set, get) => ({
   rigTimings: null,
   rigType: 'humanoid',
   creatureBones: [],
+  extraBones: [],
+  accessoryMode: false,
+  springs: { chains: [], colliders: [] },
+  springPreview: true,
   propSplit: null,
   propRig: null,
   character: null,
@@ -443,7 +470,10 @@ export const useStore = create<State & Actions>()((set, get) => ({
           measurements: { centerX: d.joints.hips[0], crotchY: d.measurements.bellyY, shoulderY: d.measurements.backY, neckY: 0, height: d.measurements.height },
         };
       } else detection = await detectJoints(positions, index, get().fingers);
-      set({ detection, joints: { joints: detection.joints, tails: detection.tails } });
+      // Accessory joints are placed by hand; keep them across re-detection.
+      const prev = get().joints?.joints ?? {};
+      const extras = Object.fromEntries(get().extraBones.filter((b) => prev[b.name]).map((b) => [b.name, prev[b.name]]));
+      set({ detection, joints: { joints: { ...detection.joints, ...extras }, tails: detection.tails } });
     } catch (e) {
       set({ error: `Joint detection failed: ${(e as Error).message}` });
     } finally {
@@ -485,8 +515,9 @@ export const useStore = create<State & Actions>()((set, get) => ({
       const quad = get().rigType === 'quadruped';
       const creature = get().rigType === 'creature';
       const defs = skeletonDefs();
-      const rigJoints = creature ? { joints: joints.joints, tails: autoTails(defs, joints.joints, joints.tails) } : joints;
-      const kind = creature ? [...defs] : quad ? 'quadruped' : fingers ? 'humanoid' : 'humanoid-nofingers';
+      const hasExtras = get().extraBones.length > 0;
+      const rigJoints = creature || hasExtras ? { joints: joints.joints, tails: autoTails(defs, joints.joints, joints.tails) } : joints;
+      const kind = creature || hasExtras ? [...defs] : quad ? 'quadruped' : fingers ? 'humanoid' : 'humanoid-nofingers';
       const w = await computeWeights(positions, index, rigJoints, kind, weightSettings, (stage, fraction) => {
         // Progress messages cross the worker boundary asynchronously; drop any that arrive late.
         if (!finished && fraction < 1) set({ busy: `${stage}…`, progress: fraction });
@@ -495,6 +526,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
       // Humanoids retarget through a canonical binding; other skeletons use direct bone keys.
       const binding = quad || creature ? null : bindSkeleton(built.root, autoMapBones(built.root).map);
       if (creature) set({ joints: rigJoints });
+      set({ springs: defaultSprings(get().rigType, get().extraBones, normalized.geometry, rigJoints.joints) });
       const kernel = w.kernel;
       set({
         character: { root: built.root, built },
@@ -867,6 +899,68 @@ export const useStore = create<State & Actions>()((set, get) => ({
     set({ creatureBones: [...creatureBones, ...m.bones], joints: { joints: { ...joints.joints, ...m.joints }, tails: {} } });
   },
 
+  addAccessoryJoint(p) {
+    const { extraBones, joints, selectedBone } = get();
+    if (!joints || !selectedBone) return;
+    const names = new Set([...skeletonDefs().map((d) => d.name)]);
+    let name: string;
+    const m = /^(strand[A-Z]+)(\d+)$/.exec(selectedBone);
+    if (m) {
+      let k = +m[2] + 1;
+      while (names.has(`${m[1]}${k}`)) k++;
+      name = `${m[1]}${k}`;
+    } else {
+      // A new chain off a template bone: strandA1, strandB1, ...
+      let letter = 0;
+      while (names.has(`strand${String.fromCharCode(65 + letter)}1`)) letter++;
+      name = `strand${String.fromCharCode(65 + letter)}1`;
+    }
+    set({
+      extraBones: [...extraBones, { name, parent: selectedBone }],
+      joints: { joints: { ...joints.joints, [name]: p }, tails: joints.tails },
+      selectedBone: name,
+    });
+  },
+
+  removeAccessoryChain(name) {
+    const { extraBones, joints } = get();
+    if (!joints) return;
+    // Remove this bone and everything below it.
+    const drop = new Set<string>([name]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const b of extraBones) if (b.parent && drop.has(b.parent) && !drop.has(b.name)) { drop.add(b.name); grew = true; }
+    }
+    const rest = Object.fromEntries(Object.entries(joints.joints).filter(([k]) => !drop.has(k)));
+    const tails = Object.fromEntries(Object.entries(joints.tails).filter(([k]) => !drop.has(k)));
+    set({ extraBones: extraBones.filter((b) => !drop.has(b.name)), joints: { joints: rest, tails }, selectedBone: extraBones.find((b) => b.name === name)?.parent ?? null });
+  },
+
+  setSpringChain(index, patch) {
+    const springs = get().springs;
+    set({ springs: { ...springs, chains: springs.chains.map((c, i) => (i === index ? { ...c, ...patch } : c)) } });
+  },
+
+  addSpringChain(startBone) {
+    const built = get().character?.built;
+    if (!built) return;
+    const chain: string[] = [];
+    let cur = built.bones[startBone] as import('three').Object3D | undefined;
+    while (cur && (cur as any).isBone && !chain.includes(cur.name)) {
+      chain.push(cur.name);
+      cur = cur.children.find((c) => (c as any).isBone);
+    }
+    if (!chain.length) return;
+    const springs = get().springs;
+    set({ springs: { ...springs, chains: [...springs.chains, { name: startBone, bones: chain, stiffness: 1, damping: 0.4, gravity: 0.3 }] } });
+  },
+
+  removeSpringChain(index) {
+    const springs = get().springs;
+    set({ springs: { ...springs, chains: springs.chains.filter((_, i) => i !== index) } });
+  },
+
   addGait(id) {
     const built = get().character?.built;
     const joints = get().joints;
@@ -961,6 +1055,38 @@ function arrays(geometry: BufferGeometry) {
   return { positions, index };
 }
 
+/** Spring chains for every accessory chain (and a quadruped's tail), with body colliders. */
+function defaultSprings(rigType: RigType, extra: CreatureBone[], geometry: BufferGeometry, joints: Record<string, [number, number, number]>): SpringConfig {
+  const chains: SpringChainDef[] = [];
+  for (const b of extra) {
+    if (extra.some((x) => x.name === b.parent)) continue; // not a chain root
+    const bones = [b.name];
+    for (let cur = b.name; ; ) {
+      const next = extra.find((x) => x.parent === cur);
+      if (!next) break;
+      bones.push(next.name);
+      cur = next.name;
+    }
+    chains.push({ name: b.name, bones, stiffness: 1, damping: 0.4, gravity: 0.35 });
+  }
+  if (rigType === 'quadruped') chains.push({ name: 'tail', bones: ['tail1', 'tail2', 'tail3'], stiffness: 2, damping: 0.5, gravity: 0.1 });
+  // Colliders around the trunk: radius = distance from the joint to the nearest surface point.
+  const trunk = rigType === 'quadruped' ? ['hips', 'spine', 'chest', 'neck', 'head'] : ['hips', 'spine', 'chest', 'upperChest', 'neck', 'head'];
+  const pos = geometry.attributes.position.array as ArrayLike<number>;
+  const colliders: SpringColliderDef[] = [];
+  for (const name of trunk) {
+    const j = joints[name];
+    if (!j) continue;
+    let best = Infinity;
+    for (let i = 0; i < pos.length; i += 3) {
+      const d = (pos[i] - j[0]) ** 2 + (pos[i + 1] - j[1]) ** 2 + (pos[i + 2] - j[2]) ** 2;
+      if (d < best) best = d;
+    }
+    colliders.push({ bone: name, radius: Math.sqrt(best) * 0.95 });
+  }
+  return { chains, colliders };
+}
+
 function orientationFor(rigType: RigType, geometry: BufferGeometry): { rotation: Quaternion; notes: string[] } {
   if (rigType === 'prop' || rigType === 'creature') return { rotation: new Quaternion(), notes: [] };
   if (rigType === 'quadruped') return guessQuadrupedOrientation(geometry);
@@ -996,6 +1122,8 @@ function ingest(file: LoadedFile) {
     joints: null,
     propSplit: null,
     propRig: null,
+    extraBones: [],
+    springs: { chains: [], colliders: [] },
     character: null,
     binding: null,
     clips: [],

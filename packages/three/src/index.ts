@@ -16,6 +16,9 @@ import {
 } from 'three';
 import { AnimationStateMachine, type StateMachineDef } from './stateMachine';
 import { FootIK, type FootIKOptions } from './ik';
+import { SpringBones, type SpringConfig } from './springs';
+
+export { SpringBones, type SpringConfig, type SpringChainDef, type SpringColliderDef } from './springs';
 
 export * from './stateMachine';
 export { FootIK, solveTwoBoneIK, raycastGround, rotateBoneWorld, type FootIKOptions, type GroundQuery, type Leg } from './ik';
@@ -139,6 +142,8 @@ export class Character {
   private rootLast: Vector3 | null = null;
   private rootLastDelta = new Vector3();
   private rootLooped = false;
+  /** Secondary motion (hair, tails, capes); set up from the file automatically when present. */
+  springs: SpringBones | null = null;
 
   constructor(object: Object3D, clips: AnimationClip[]) {
     this.object = object;
@@ -152,6 +157,12 @@ export class Character {
     this.mixer.addEventListener('loop', emit('loop') as any);
     this.mixer.addEventListener('loop', () => (this.rootLooped = true));
     this.rootRest = this.bone('hips')?.position.clone() ?? null;
+    // Spring bones exported by RigForge live in node extras (userData after loading).
+    let springConfig: SpringConfig | undefined;
+    object.traverse((o) => {
+      springConfig ??= (o.userData?.rigforge as { springs?: SpringConfig } | undefined)?.springs;
+    });
+    if (springConfig?.chains?.length) this.springs = new SpringBones(object, springConfig, (n) => this.bone(n) ?? object.getObjectByName(n));
     // Capture rest orientations used by lookAt before any animation runs.
     for (const name of ['head', 'neck']) {
       const b = this.bone(name);
@@ -245,6 +256,13 @@ export class Character {
     if (this.layers.size) this.applyLayers(delta);
     this.footIK?.apply();
     if (this.lookTarget) this.applyLookAt();
+    this.springs?.update(delta);
+  }
+
+  /** Replaces the spring bone setup (null removes it). */
+  setSprings(config: SpringConfig | null): SpringBones | null {
+    this.springs = config?.chains.length ? new SpringBones(this.object, config, (n) => this.bone(n) ?? this.object.getObjectByName(n)) : null;
+    return this.springs;
   }
 
   // --- State machine --------------------------------------------------------------

@@ -3,6 +3,7 @@ import { quadrupedGaits } from '@rigforge/core';
 import { PRESETS, skeletonDefs, useStore } from '../store';
 import { Check, Notes, Section, Seg } from '../components/ui';
 import { PropRigPanel } from './PropRigPanel';
+import { AccessorySection, SpringSection } from './SpringPanels';
 import { CreatureRigPanel } from './CreatureRigPanel';
 
 export function RigPanel() {
@@ -62,6 +63,7 @@ function HumanoidRigPanel() {
             ))}
           </select>
         </Section>
+        <SpringSection />
         <PaintSection />
         <Section title="Inspect weights">
           <select
@@ -119,6 +121,7 @@ function HumanoidRigPanel() {
           <button className="btn small" onClick={() => void runDetection()} disabled={!!busy}>Re-detect</button>
         </div>
       </Section>
+      <AccessorySection />
       <details className="section">
         <summary style={{ cursor: 'pointer' }}><h3 style={{ display: 'inline' }}>Skinning settings</h3></summary>
         <div className="field">
