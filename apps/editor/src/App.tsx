@@ -2,7 +2,8 @@ import { Suspense, useEffect } from 'react';
 import { STEPS, useStore, type Step } from './store';
 import { Viewport } from './components/Viewport';
 import { Timeline } from './components/Timeline';
-import { Busy, Logo } from './components/ui';
+import { Busy, FilePicker, Logo } from './components/ui';
+import { RestoreBanner } from './components/RestoreBanner';
 import { DropZone, ImportPanel } from './panels/ImportPanel';
 import { OrientPanel } from './panels/OrientPanel';
 import { RigPanel, ShadingToolbar } from './panels/RigPanel';
@@ -23,6 +24,8 @@ export function App() {
   const character = useStore((s) => s.character);
   const loadFromFiles = useStore((s) => s.loadFromFiles);
   const report = useStore((s) => s.report);
+  const openProject = useStore((s) => s.openProject);
+  const saveProjectFile = useStore((s) => s.saveProjectFile);
 
   // Drop a file anywhere to (re)start.
   useEffect(() => {
@@ -30,7 +33,9 @@ export function App() {
     const drop = (e: DragEvent) => {
       if ((e.target as HTMLElement)?.closest?.('.drop, .side')) return;
       e.preventDefault();
-      if (e.dataTransfer?.files.length && useStore.getState().step === 'import') void loadFromFiles(Array.from(e.dataTransfer.files));
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length === 1 && /\.rigforge$/i.test(files[0].name)) void useStore.getState().openProject(files[0]);
+      else if (files.length && useStore.getState().step === 'import') void loadFromFiles(files);
     };
     window.addEventListener('dragover', over);
     window.addEventListener('drop', drop);
@@ -58,6 +63,14 @@ export function App() {
         </nav>
         <div className="spacer" />
         {report && <span className="meta">{report.triangles.toLocaleString()} tris</span>}
+        <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}>
+          <FilePicker className="btn small" accept=".rigforge,application/gzip,application/json" onFiles={(f) => void openProject(f[0])}>
+            Open
+          </FilePicker>
+          <button className="btn small" disabled={!hasModel} onClick={() => void saveProjectFile()} title="Download a .rigforge project file">
+            Save
+          </button>
+        </div>
       </header>
       <main className="main">
         <aside className="side">
@@ -83,6 +96,7 @@ export function App() {
               <div className="card">
                 <h1>Rig &amp; animate Meshy models</h1>
                 <p>Auto-rig with finger bones, add motion-capture animations and export an optimized GLB for three.js. Everything runs in your browser.</p>
+                <RestoreBanner />
                 <DropZone />
               </div>
             </div>

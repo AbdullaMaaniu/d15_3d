@@ -39,6 +39,7 @@ import {
 import presetPack from '@rigforge/presets/clips.json';
 import { hasSkeleton, loadFiles, loadSample, type LoadedFile } from './lib/loaders';
 import { computeWeights, detectJoints, type WeightSettings } from './lib/rigClient';
+import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
 
 export type Step = 'import' | 'orient' | 'rig' | 'animate' | 'export';
 export const STEPS: Step[] = ['import', 'orient', 'rig', 'animate', 'export'];
@@ -157,6 +158,8 @@ interface Actions {
   dab(point: [number, number, number]): void;
   undoPaint(): void;
   pickBoneAt(point: [number, number, number]): void;
+  saveProjectFile(): Promise<void>;
+  openProject(blob: Blob): Promise<void>;
 }
 
 let clipCounter = 0;
@@ -526,6 +529,33 @@ export const useStore = create<State & Actions>()((set, get) => ({
     set({ selectedBone: pc.mesh.skeleton.bones[si.getComponent(best, k)].name });
   },
 
+  async saveProjectFile() {
+    try {
+      const blob = await saveProject(get());
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${get().exportName || 'character'}.rigforge`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  async openProject(blob) {
+    set({ busy: 'Opening project…', error: null });
+    try {
+      const patch = await loadProject(blob, (entry, binding) => bake(binding, entry));
+      paintCache = null;
+      set({ ...patch, paint: { ...get().paint, active: false }, testClip: null, selectedBone: null });
+    } catch (e) {
+      set({ error: `Could not open project: ${(e as Error).message}` });
+    } finally {
+      set({ busy: null });
+    }
+  },
+
   play(id) {
     set({ activeClip: id, playing: id !== null, testClip: null });
   },
@@ -589,3 +619,23 @@ function rebakeAll() {
   if (!binding) return;
   useStore.setState({ clips: clips.map((c) => ({ ...c, baked: bake(binding, c) })) });
 }
+
+// Autosave a couple of seconds after meaningful edits.
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+useStore.subscribe((s, prev) => {
+  const changed =
+    s.prepared !== prev.prepared || s.joints !== prev.joints || s.character !== prev.character || s.clips !== prev.clips ||
+    s.weightsVersion !== prev.weightsVersion || s.rotation !== prev.rotation || s.height !== prev.height || s.exportName !== prev.exportName;
+  if (!changed || canSave(s)) return;
+  if (autosaveTimer) clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(async () => {
+    const state = useStore.getState();
+    if (state.busy || canSave(state)) return;
+    try {
+      const blob = await saveProject(state);
+      await writeAutosave({ name: state.exportName, savedAt: new Date().toISOString(), blob });
+    } catch (e) {
+      console.warn('[rigforge] autosave failed', e);
+    }
+  }, 2500);
+});
