@@ -64,5 +64,13 @@ describe('export', () => {
     const s = generateSnippet('three', { url: 'hero.glb', clipNames: ['Idle', 'Walk'] });
     expect(s).toContain("character.play('Idle')");
     expect(generateSnippet('r3f', { url: 'hero.glb', clipNames: ['Idle', 'Run'] })).toContain('<Character');
+    const sm = generateSnippet('state-machine', {
+      url: 'hero.glb',
+      clipNames: ['Idle', 'Walk', 'Run', 'Jump', 'Punch'],
+      controller: { locomotion: [[0, 'Idle'], [1.3, 'Walk'], [3.8, 'Run']], jump: 'Jump', actions: { punch: 'Punch' } },
+    });
+    expect(sm).toContain('character.autoStateMachine()');
+    expect(sm).toContain('Walk @ 1.3 m/s');
+    expect(sm).toContain("sm.trigger('punch')");
   });
 });

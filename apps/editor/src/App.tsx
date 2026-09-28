@@ -1,8 +1,10 @@
 import { Suspense, useEffect } from 'react';
 import { STEPS, useStore, type Step } from './store';
 import { Viewport } from './components/Viewport';
+import { TestDrive } from './components/TestDrive';
 import { Timeline } from './components/Timeline';
-import { Busy, Logo } from './components/ui';
+import { Busy, FilePicker, Logo } from './components/ui';
+import { RestoreBanner } from './components/RestoreBanner';
 import { DropZone, ImportPanel } from './panels/ImportPanel';
 import { OrientPanel } from './panels/OrientPanel';
 import { RigPanel, ShadingToolbar } from './panels/RigPanel';
@@ -23,6 +25,14 @@ export function App() {
   const character = useStore((s) => s.character);
   const loadFromFiles = useStore((s) => s.loadFromFiles);
   const report = useStore((s) => s.report);
+  const openProject = useStore((s) => s.openProject);
+  const saveProjectFile = useStore((s) => s.saveProjectFile);
+  const driving = useStore((s) => !!s.testDrive) && step === 'export';
+
+  // Leaving the export step ends a test drive.
+  useEffect(() => {
+    if (step !== 'export' && useStore.getState().testDrive) useStore.getState().set('testDrive', null);
+  }, [step]);
 
   // Drop a file anywhere to (re)start.
   useEffect(() => {
@@ -30,7 +40,9 @@ export function App() {
     const drop = (e: DragEvent) => {
       if ((e.target as HTMLElement)?.closest?.('.drop, .side')) return;
       e.preventDefault();
-      if (e.dataTransfer?.files.length && useStore.getState().step === 'import') void loadFromFiles(Array.from(e.dataTransfer.files));
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length === 1 && /\.rigforge$/i.test(files[0].name)) void useStore.getState().openProject(files[0]);
+      else if (files.length && useStore.getState().step === 'import') void loadFromFiles(files);
     };
     window.addEventListener('dragover', over);
     window.addEventListener('drop', drop);
@@ -58,6 +70,14 @@ export function App() {
         </nav>
         <div className="spacer" />
         {report && <span className="meta">{report.triangles.toLocaleString()} tris</span>}
+        <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}>
+          <FilePicker className="btn small" accept=".rigforge,application/gzip,application/json,.glb,.gltf,.fbx,.obj" onFiles={(f) => void openProject(f[0])}>
+            Open
+          </FilePicker>
+          <button className="btn small" disabled={!hasModel} onClick={() => void saveProjectFile()} title="Download a .rigforge project file">
+            Save
+          </button>
+        </div>
       </header>
       <main className="main">
         <aside className="side">
@@ -75,21 +95,26 @@ export function App() {
           {step === 'export' && <ExportPanel />}
         </aside>
         <section className="stage">
-          <Suspense fallback={null}>
-            <Viewport />
-          </Suspense>
+          {driving ? (
+            <TestDrive />
+          ) : (
+            <Suspense fallback={null}>
+              <Viewport />
+            </Suspense>
+          )}
           {!hasModel && step === 'import' && (
             <div className="empty">
               <div className="card">
                 <h1>Rig &amp; animate Meshy models</h1>
                 <p>Auto-rig with finger bones, add motion-capture animations and export an optimized GLB for three.js. Everything runs in your browser.</p>
+                <RestoreBanner />
                 <DropZone />
               </div>
             </div>
           )}
-          {character && step !== 'import' && step !== 'orient' && <ShadingToolbar />}
-          {character && (step === 'animate' || step === 'export' || step === 'rig') && <Timeline />}
-          <div className="overlay">
+          {character && !driving && step !== 'import' && step !== 'orient' && <ShadingToolbar />}
+          {character && !driving && (step === 'animate' || step === 'export' || step === 'rig') && <Timeline />}
+          <div className="overlay" hidden={driving}>
             {step === 'rig' && !character && <span className="pill">Drag markers · Orbit: drag empty space · Zoom: scroll</span>}
             {step === 'orient' && <span className="pill">Orange arrow = front (+Z)</span>}
           </div>

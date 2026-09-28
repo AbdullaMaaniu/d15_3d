@@ -5,7 +5,7 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "pnpm --filter @rigforge/editor dev",
-    "build": "pnpm -r --filter ./packages/** build && pnpm --filter @rigforge/editor build",
+    "build": "pnpm -r --filter \"./packages/**\" build && pnpm --filter @rigforge/editor build",
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:presets": "pnpm --filter @rigforge/presets build:presets",
     "typecheck": "pnpm -r typecheck",

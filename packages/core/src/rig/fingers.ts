@@ -54,11 +54,12 @@ export function detectFingers(
   const n = pts.length / 3;
   const T = new Float32Array(n), S = new Float32Array(n), N = new Float32Array(n);
   let sMin = Infinity, sMax = -Infinity;
+  const [fa0, fa1, fa2] = frame.a, [fs0, fs1, fs2] = frame.s, [fn0, fn1, fn2] = frame.n;
   for (let i = 0; i < n; i++) {
-    const d: V3 = [pts[i * 3] - wrist[0], pts[i * 3 + 1] - wrist[1], pts[i * 3 + 2] - wrist[2]];
-    T[i] = dot(d, frame.a);
-    S[i] = dot(d, frame.s);
-    N[i] = dot(d, frame.n);
+    const d0 = pts[i * 3] - wrist[0], d1 = pts[i * 3 + 1] - wrist[1], d2 = pts[i * 3 + 2] - wrist[2];
+    T[i] = d0 * fa0 + d1 * fa1 + d2 * fa2;
+    S[i] = d0 * fs0 + d1 * fs1 + d2 * fs2;
+    N[i] = d0 * fn0 + d1 * fn1 + d2 * fn2;
     if (T[i] > 0.25 * Lh) {
       if (S[i] < sMin) sMin = S[i];
       if (S[i] > sMax) sMax = S[i];
@@ -274,15 +275,18 @@ export function detectFingers(
 }
 
 function sampleHand(positions: Float32Array, index: Uint32Array | null, wrist: V3, a: V3, Lh: number): Float32Array {
-  const out: number[] = [];
+  let out = new Float32Array(3 * 65536);
+  let m = 0;
   const spacing = Lh / 260;
   const triCount = index ? index.length / 3 : positions.length / 9;
+  const [wx, wy, wz] = wrist, [a0, a1, a2] = a;
+  const tLo = -0.05 * Lh, tHi = 1.15 * Lh, r2 = 0.8 * 0.8 * Lh * Lh;
   const inRegion = (x: number, y: number, z: number) => {
-    const dx = x - wrist[0], dy = y - wrist[1], dz = z - wrist[2];
-    const t = dx * a[0] + dy * a[1] + dz * a[2];
-    if (t < -0.05 * Lh || t > 1.15 * Lh) return false;
-    const rx = dx - a[0] * t, ry = dy - a[1] * t, rz = dz - a[2] * t;
-    return rx * rx + ry * ry + rz * rz < 0.8 * 0.8 * Lh * Lh;
+    const dx = x - wx, dy = y - wy, dz = z - wz;
+    const t = dx * a0 + dy * a1 + dz * a2;
+    if (t < tLo || t > tHi) return false;
+    const rx = dx - a0 * t, ry = dy - a1 * t, rz = dz - a2 * t;
+    return rx * rx + ry * ry + rz * rz < r2;
   };
   for (let tIdx = 0; tIdx < triCount; tIdx++) {
     const ia = index ? index[tIdx * 3] : tIdx * 3;
@@ -294,16 +298,27 @@ function sampleHand(positions: Float32Array, index: Uint32Array | null, wrist: V
     if (!inRegion((ax + bx + cx) / 3, (ay + by + cy) / 3, (az + bz + cz) / 3)) continue;
     const e = Math.max(Math.hypot(bx - ax, by - ay, bz - az), Math.hypot(cx - bx, cy - by, cz - bz), Math.hypot(ax - cx, ay - cy, az - cz));
     const k = Math.max(1, Math.min(260, Math.ceil(e / spacing)));
+    // Grow once per triangle rather than per point.
+    const need = m + 3 * ((k + 1) * (k + 2)) / 2;
+    if (need > out.length) {
+      const grown = new Float32Array(Math.max(need, out.length * 2));
+      grown.set(out.subarray(0, m));
+      out = grown;
+    }
     for (let i = 0; i <= k; i++)
       for (let j = 0; j <= k - i; j++) {
         const u = i / k, w = j / k;
         const x = ax + (bx - ax) * u + (cx - ax) * w;
         const y = ay + (by - ay) * u + (cy - ay) * w;
         const z = az + (bz - az) * u + (cz - az) * w;
-        if (inRegion(x, y, z)) out.push(x, y, z);
+        if (inRegion(x, y, z)) {
+          out[m++] = x;
+          out[m++] = y;
+          out[m++] = z;
+        }
       }
   }
-  return new Float32Array(out);
+  return out.slice(0, m);
 }
 
 function handFrame(pts: Float32Array, wrist: V3, a: V3, Lh: number): HandFrame {
@@ -311,20 +326,31 @@ function handFrame(pts: Float32Array, wrist: V3, a: V3, Lh: number): HandFrame {
   let s = norm(sub([0, 0, 1], scale(a, a[2])));
   if (!Number.isFinite(s[0]) || len(sub([0, 0, 1], scale(a, a[2]))) < 1e-3) s = [0, 0, 1];
   // PCA of the mid-hand cross-section to find the palm's wide axis.
-  const sel: V3[] = [];
-  for (let i = 0; i < pts.length / 3; i++) {
-    const d: V3 = [pts[i * 3] - wrist[0], pts[i * 3 + 1] - wrist[1], pts[i * 3 + 2] - wrist[2]];
-    const t = dot(d, a);
-    if (t > 0.2 * Lh && t < 0.6 * Lh) sel.push(sub(d, scale(a, t)));
+  // Radial offsets of the selected points, stored flat (no per-point allocations).
+  const count = pts.length / 3;
+  const sel = new Float64Array(pts.length);
+  let ns = 0;
+  const [a0, a1, a2] = a;
+  for (let i = 0; i < count; i++) {
+    const d0 = pts[i * 3] - wrist[0], d1 = pts[i * 3 + 1] - wrist[1], d2 = pts[i * 3 + 2] - wrist[2];
+    const t = d0 * a0 + d1 * a1 + d2 * a2;
+    if (t > 0.2 * Lh && t < 0.6 * Lh) {
+      sel[ns * 3] = d0 - a0 * t;
+      sel[ns * 3 + 1] = d1 - a1 * t;
+      sel[ns * 3 + 2] = d2 - a2 * t;
+      ns++;
+    }
   }
-  if (sel.length > 30) {
+  if (ns > 30) {
     const m = [0, 0, 0];
-    for (const p of sel) { m[0] += p[0]; m[1] += p[1]; m[2] += p[2]; }
-    m[0] /= sel.length; m[1] /= sel.length; m[2] /= sel.length;
+    for (let i = 0; i < ns; i++) { m[0] += sel[i * 3]; m[1] += sel[i * 3 + 1]; m[2] += sel[i * 3 + 2]; }
+    m[0] /= ns; m[1] /= ns; m[2] /= ns;
     const C = [0, 0, 0, 0, 0, 0, 0, 0, 0];
-    for (const p of sel) {
-      const q = [p[0] - m[0], p[1] - m[1], p[2] - m[2]];
-      for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) C[r * 3 + c] += q[r] * q[c];
+    for (let i = 0; i < ns; i++) {
+      const q0 = sel[i * 3] - m[0], q1 = sel[i * 3 + 1] - m[1], q2 = sel[i * 3 + 2] - m[2];
+      C[0] += q0 * q0; C[1] += q0 * q1; C[2] += q0 * q2;
+      C[3] += q1 * q0; C[4] += q1 * q1; C[5] += q1 * q2;
+      C[6] += q2 * q0; C[7] += q2 * q1; C[8] += q2 * q2;
     }
     // Power iteration for the major axis.
     let v: V3 = [s[0], s[1], s[2]];

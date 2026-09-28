@@ -138,3 +138,71 @@ function toIndexed(g: BufferGeometry): BufferGeometry {
   g.setIndex(Array.from(idx));
   return g;
 }
+
+/**
+ * Procedural test quadruped (a dog, facing +Z, ~0.9 m tall at the head) with
+ * ground-truth joints for the quadruped skeleton.
+ */
+export function createQuadrupedMannequin(options: { tail?: boolean; detail?: number } = {}): { geometry: BufferGeometry; truth: JointMap } {
+  const detail = options.detail ?? 10;
+  const parts: BufferGeometry[] = [];
+  const joints: Record<string, V3> = {};
+  const tails: Record<string, V3> = {};
+  const limb = (a: V3, b: V3, r: number, squashX = 1) => {
+    const va = new Vector3(...a), vb = new Vector3(...b);
+    const g = new CapsuleGeometry(r, Math.max(0.001, va.distanceTo(vb)), 4, detail);
+    if (squashX !== 1) g.scale(squashX, 1, 1);
+    const q = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), vb.clone().sub(va).normalize());
+    g.applyMatrix4(new Matrix4().compose(va.clone().add(vb).multiplyScalar(0.5), q, new Vector3(1, 1, 1)));
+    parts.push(g);
+  };
+  // Torso along Z.
+  limb([0, 0.56, -0.34], [0, 0.58, 0.32], 0.15, 0.85);
+  joints.hips = [0, 0.56, -0.3];
+  joints.spine = [0, 0.57, 0];
+  joints.chest = [0, 0.58, 0.3];
+  // Neck and head.
+  limb([0, 0.62, 0.36], [0, 0.8, 0.52], 0.07);
+  limb([0, 0.84, 0.52], [0, 0.8, 0.72], 0.085);
+  joints.neck = [0, 0.68, 0.42];
+  joints.head = [0, 0.84, 0.54];
+  tails.head = [0, 0.8, 0.81];
+  // Tail.
+  if (options.tail !== false) {
+    limb([0, 0.62, -0.5], [0, 0.78, -0.8], 0.028);
+    joints.tail0 = [0, 0.62, -0.5];
+    joints.tail1 = [0, 0.66, -0.58];
+    joints.tail2 = [0, 0.7, -0.66];
+    joints.tail3 = [0, 0.74, -0.73];
+    tails.tail3 = [0, 0.78, -0.8];
+  }
+  for (const [side, sx] of [['left', 1], ['right', -1]] as const) {
+    // Front legs: straight column.
+    const f = (s: string) => `${side}Front${s}`;
+    joints[f('UpperLeg')] = [0.1 * sx, 0.5, 0.3];
+    joints[f('LowerLeg')] = [0.1 * sx, 0.3, 0.31];
+    joints[f('Foot')] = [0.1 * sx, 0.09, 0.3];
+    joints[f('Toes')] = [0.1 * sx, 0.025, 0.34];
+    tails[f('Toes')] = [0.1 * sx, 0.025, 0.39];
+    limb(joints[f('UpperLeg')], joints[f('LowerLeg')], 0.045);
+    limb(joints[f('LowerLeg')], joints[f('Foot')], 0.035);
+    limb([0.1 * sx, 0.03, 0.3], [0.1 * sx, 0.03, 0.38], 0.03);
+    // Back legs: thigh forward, shin back, hock down.
+    const b = (s: string) => `${side}Back${s}`;
+    joints[b('UpperLeg')] = [0.1 * sx, 0.5, -0.3];
+    joints[b('LowerLeg')] = [0.1 * sx, 0.3, -0.22];
+    joints[b('Foot')] = [0.1 * sx, 0.14, -0.36];
+    joints[b('Toes')] = [0.1 * sx, 0.025, -0.3];
+    tails[b('Toes')] = [0.1 * sx, 0.025, -0.25];
+    limb(joints[b('UpperLeg')], joints[b('LowerLeg')], 0.055);
+    limb(joints[b('LowerLeg')], joints[b('Foot')], 0.04);
+    limb(joints[b('Foot')], [0.1 * sx, 0.03, -0.32], 0.03);
+    limb([0.1 * sx, 0.03, -0.34], [0.1 * sx, 0.03, -0.26], 0.03);
+  }
+  const nonIndexed = parts.map((p) => {
+    const g = p.index ? p.toNonIndexed() : p;
+    for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') g.deleteAttribute(k);
+    return g;
+  });
+  return { geometry: toIndexed(mergeGeometries(nonIndexed, false)!), truth: { joints, tails } };
+}

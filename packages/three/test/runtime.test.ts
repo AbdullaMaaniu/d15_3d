@@ -44,3 +44,25 @@ describe('Character', () => {
     expect(fwd.x).toBeGreaterThan(0.7);
   });
 });
+
+describe('auto state machine', () => {
+  it('guesses roles from clip names and drives them', async () => {
+    const { guessController } = await import('../src/stateMachine');
+    const setup = guessController(['Idle', 'Walk', 'Run', 'Jump', 'Punch', 'Wave']);
+    expect(setup.locomotion).toEqual([[0, 'Idle'], [1.4, 'Walk'], [4, 'Run']]);
+    expect(setup.jump).toBe('Jump');
+    expect(setup.actions).toEqual({ punch: 'Punch', wave: 'Wave' });
+  });
+
+  it('uses the exported setup and fires action triggers', () => {
+    const c = makeRig();
+    c.object.userData.rigforge = { controller: { locomotion: [[0, 'Idle']], actions: { hello: 'Wave' } } };
+    const sm = c.autoStateMachine();
+    expect(sm.state).toBe('move');
+    sm.trigger('hello');
+    c.update(0.05);
+    expect(sm.state).toBe('action:hello');
+    for (let i = 0; i < 40; i++) c.update(0.05);
+    expect(sm.state).toBe('move');
+  });
+});

@@ -40,6 +40,8 @@ export interface SkeletonBinding {
   tpose: Map<string, Quaternion>;
   restHipsWorld: Vector3;
   hipsHeight: number;
+  /** Local transforms of every node at bind time; sampling always starts from these. */
+  restPose: Array<[Object3D, Vector3, Quaternion, Vector3]>;
 }
 
 const ORDER = HUMANOID_WITH_FINGERS.map((d) => d.name);
@@ -51,6 +53,8 @@ const ORDER = HUMANOID_WITH_FINGERS.map((d) => d.name);
  */
 export function bindSkeleton(root: Object3D, map: BoneMap): SkeletonBinding {
   root.updateMatrixWorld(true);
+  const restPose: SkeletonBinding['restPose'] = [];
+  root.traverse((o) => restPose.push([o, o.position.clone(), o.quaternion.clone(), o.scale.clone()]));
   const node = (canon: string) => (map[canon] ? root.getObjectByName(map[canon]) : undefined);
   const tpose = new Map<string, Quaternion>();
   const correction = new Map<string, Quaternion>();
@@ -89,7 +93,7 @@ export function bindSkeleton(root: Object3D, map: BoneMap): SkeletonBinding {
   }
   if (!Number.isFinite(ground)) ground = 0;
   const hipsHeight = Math.max(1e-6, restHipsWorld.y - ground);
-  return { root, map, tpose, restHipsWorld, hipsHeight };
+  return { root, map, tpose, restHipsWorld, hipsHeight, restPose };
 }
 
 /** Samples any three.js animation on a mapped skeleton into a NormalizedClip. */
@@ -112,8 +116,15 @@ export function extractNormalizedClip(
     .filter((o): o is Object3D => !!o);
   const footMin = new Float32Array(frames);
 
+  // Sample from the rest pose (bones the clip doesn't animate stay at rest),
+  // then put back whatever pose the skeleton was showing.
   const saved: Array<[Object3D, Vector3, Quaternion, Vector3]> = [];
   binding.root.traverse((o) => saved.push([o, o.position.clone(), o.quaternion.clone(), o.scale.clone()]));
+  for (const [o, p, r, sc] of binding.restPose) {
+    o.position.copy(p);
+    o.quaternion.copy(r);
+    o.scale.copy(sc);
+  }
   const mixer = new AnimationMixer(binding.root);
   const action = mixer.clipAction(clip);
   action.play();
@@ -154,7 +165,6 @@ export function extractNormalizedClip(
   }
   action.stop();
   mixer.uncacheRoot(binding.root);
-  // Leave the skeleton in its rest pose.
   for (const [o, p, r, sc] of saved) {
     o.position.copy(p);
     o.quaternion.copy(r);

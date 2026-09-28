@@ -1,10 +1,19 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { createPortal, useFrame, type ThreeElements } from '@react-three/fiber';
+import { createPortal, useFrame, useThree, type ThreeElements } from '@react-three/fiber';
 import { Vector3, type Object3D } from 'three';
-import { type Character as RigCharacter, loadCharacter, type LoadOptions, type LookAtOptions, type PlayOptions } from '@rigforge/three';
+import {
+  type Character as RigCharacter,
+  loadCharacter,
+  type FootIKOptions,
+  type LoadOptions,
+  type LookAtOptions,
+  type ParamValue,
+  type PlayOptions,
+  type StateMachineDef,
+} from '@rigforge/three';
 
 export { Character as RigCharacter, loadCharacter } from '@rigforge/three';
-export type { HumanoidBone, PlayOptions, LookAtOptions } from '@rigforge/three';
+export type { HumanoidBone, PlayOptions, LookAtOptions, StateMachineDef, FootIKOptions, LayerOptions } from '@rigforge/three';
 
 const cache = new Map<string, Promise<RigCharacter>>();
 
@@ -66,6 +75,14 @@ export type CharacterProps = Omit<ThreeElements['group'], 'children'> & {
   onLoaded?: (character: RigCharacter) => void;
   onFinished?: (clipName: string) => void;
   loaderOptions?: LoadOptions;
+  /** Drive animation from a state machine instead of `action`. */
+  stateMachine?: StateMachineDef;
+  /** State machine parameters, applied whenever they change (e.g. { speed }). */
+  params?: Record<string, ParamValue>;
+  /** Plant feet on uneven ground: `true` raycasts against the whole scene. */
+  footIK?: boolean | FootIKOptions;
+  /** Move the character with the clips' root motion. */
+  rootMotion?: boolean;
   children?: ReactNode;
 };
 
@@ -84,10 +101,41 @@ export function Character({
   onLoaded,
   onFinished,
   loaderOptions,
+  stateMachine,
+  params,
+  footIK,
+  rootMotion,
   children,
   ...group
 }: CharacterProps) {
   const character = useCharacter(src, loaderOptions);
+  const scene = useThree((s) => s.scene);
+
+  useEffect(() => {
+    if (!character || !stateMachine) return;
+    character.stateMachine(stateMachine);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [character, stateMachine]);
+
+  useEffect(() => {
+    const sm = character?.machineState;
+    if (!sm || !params) return;
+    for (const [k, v] of Object.entries(params)) sm.set(k, v);
+  }, [character, params]);
+
+  useEffect(() => {
+    if (!character) return;
+    if (!footIK) character.enableFootIK(null);
+    else {
+      const opts = footIK === true ? {} : footIK;
+      const ground = opts.ground ?? scene.children.filter((o) => o !== character.object && !isAncestor(o, character.object));
+      character.enableFootIK({ ...opts, ground });
+    }
+  }, [character, footIK, scene]);
+
+  useEffect(() => {
+    if (character) character.rootMotion = !!rootMotion;
+  }, [character, rootMotion]);
 
   useEffect(() => {
     if (character) onLoaded?.(character);
@@ -95,10 +143,10 @@ export function Character({
   }, [character]);
 
   useEffect(() => {
-    if (!character || !action) return;
+    if (!character || !action || stateMachine) return;
     const opts: PlayOptions = { fade, speed, loop };
     character.play(action, opts);
-  }, [character, action, fade, speed, loop]);
+  }, [character, action, fade, speed, loop, stateMachine]);
 
   useEffect(() => {
     if (!character || !onFinished) return;
@@ -139,4 +187,9 @@ export function Attach({ bone, children }: { bone: string; children?: ReactNode 
   const target = character?.bone(bone);
   if (!target) return null;
   return createPortal(<>{children}</>, target);
+}
+
+function isAncestor(a: Object3D, b: Object3D): boolean {
+  for (let p: Object3D | null = b; p; p = p.parent) if (p === a) return true;
+  return false;
 }

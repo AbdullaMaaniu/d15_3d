@@ -1,15 +1,27 @@
 import {
+  AdditiveAnimationBlendMode,
   AnimationAction,
   AnimationClip,
   AnimationMixer,
+  AnimationUtils,
   Bone,
   LoopOnce,
   LoopRepeat,
+  Matrix3,
+  Matrix4,
   Object3D,
   Quaternion,
   Vector3,
   type WebGLRenderer,
 } from 'three';
+import { AnimationStateMachine, controllerStateMachine, guessController, type ControllerSetup, type StateMachineDef } from './stateMachine';
+import { FootIK, type FootIKOptions } from './ik';
+import { SpringBones, type SpringConfig } from './springs';
+
+export { SpringBones, type SpringConfig, type SpringChainDef, type SpringColliderDef } from './springs';
+
+export * from './stateMachine';
+export { FootIK, solveTwoBoneIK, raycastGround, rotateBoneWorld, type FootIKOptions, type GroundQuery, type Leg } from './ik';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -70,6 +82,40 @@ export interface LookAtOptions {
 
 type EventName = 'finished' | 'loop';
 
+/** Named bone subsets for layers. Custom masks are lists of bone names (each includes its descendants). */
+export type LayerMask = 'fullBody' | 'upperBody' | 'lowerBody' | 'leftArm' | 'rightArm' | 'head' | string[];
+
+const MASKS: Record<Exclude<LayerMask, string[]>, string[]> = {
+  fullBody: ['hips'],
+  upperBody: ['spine'],
+  lowerBody: ['leftUpperLeg', 'rightUpperLeg'],
+  leftArm: ['leftShoulder'],
+  rightArm: ['rightShoulder'],
+  head: ['neck'],
+};
+
+export interface LayerOptions {
+  mask?: LayerMask;
+  /** 0..1 (default 1). */
+  weight?: number;
+  fade?: number;
+  loop?: boolean;
+  speed?: number;
+  /** Add on top of the base motion instead of replacing it (clip made relative to its first frame). */
+  additive?: boolean;
+}
+
+interface Layer {
+  name: string;
+  mixer: AnimationMixer | null;
+  action: AnimationAction;
+  bones: Object3D[];
+  weight: number;
+  target: number;
+  fadeRate: number;
+  additive: boolean;
+}
+
 /**
  * A rigged, animated character: wraps an AnimationMixer with name-based playback,
  * crossfades, bone lookup/attachment and a procedural look-at.
@@ -88,6 +134,16 @@ export class Character {
     finished: new Set(),
     loop: new Set(),
   };
+  private machine: AnimationStateMachine | null = null;
+  private layers = new Map<string, Layer>();
+  private footIK: FootIK | null = null;
+  private rootMotionOn = false;
+  private rootRest: Vector3 | null = null;
+  private rootLast: Vector3 | null = null;
+  private rootLastDelta = new Vector3();
+  private rootLooped = false;
+  /** Secondary motion (hair, tails, capes); set up from the file automatically when present. */
+  springs: SpringBones | null = null;
 
   constructor(object: Object3D, clips: AnimationClip[]) {
     this.object = object;
@@ -99,6 +155,14 @@ export class Character {
     };
     this.mixer.addEventListener('finished', emit('finished') as any);
     this.mixer.addEventListener('loop', emit('loop') as any);
+    this.mixer.addEventListener('loop', () => (this.rootLooped = true));
+    this.rootRest = this.bone('hips')?.position.clone() ?? null;
+    // Spring bones exported by RigForge live in node extras (userData after loading).
+    let springConfig: SpringConfig | undefined;
+    object.traverse((o) => {
+      springConfig ??= (o.userData?.rigforge as { springs?: SpringConfig } | undefined)?.springs;
+    });
+    if (springConfig?.chains?.length) this.springs = new SpringBones(object, springConfig, (n) => this.bone(n) ?? object.getObjectByName(n));
     // Capture rest orientations used by lookAt before any animation runs.
     for (const name of ['head', 'neck']) {
       const b = this.bone(name);
@@ -114,8 +178,9 @@ export class Character {
     return this.clips.map((c) => c.name);
   }
 
-  /** Plays (crossfading into) the named clip. Returns the action, or null if missing. */
+  /** Plays (crossfading into) the named clip. Returns the action, or null if missing. Stops any state machine. */
   play(name: string, options: PlayOptions = {}): AnimationAction | null {
+    this.machine = null;
     const action = this.actions.get(name) ?? this.findAction(name);
     if (!action) {
       console.warn(`[rigforge] No clip named "${name}". Available: ${this.clipNames.join(', ')}`);
@@ -185,8 +250,212 @@ export class Character {
 
   /** Advances animation. Call once per frame. */
   update(delta: number): void {
+    this.machine?.update();
     this.mixer.update(delta);
+    if (this.rootMotionOn) this.applyRootMotion();
+    if (this.layers.size) this.applyLayers(delta);
+    this.footIK?.apply();
     if (this.lookTarget) this.applyLookAt();
+    this.springs?.update(delta);
+  }
+
+  /** Replaces the spring bone setup (null removes it). */
+  setSprings(config: SpringConfig | null): SpringBones | null {
+    this.springs = config?.chains.length ? new SpringBones(this.object, config, (n) => this.bone(n) ?? this.object.getObjectByName(n)) : null;
+    return this.springs;
+  }
+
+  // --- State machine --------------------------------------------------------------
+
+  /** Drives playback from a state machine (replaces manual play() calls). */
+  stateMachine(def: StateMachineDef): AnimationStateMachine {
+    this.current?.fadeOut(0.2);
+    this.current = null;
+    this.machine = new AnimationStateMachine((name) => this.actions.get(name) ?? this.findAction(name), def);
+    return this.machine;
+  }
+
+  /**
+   * A ready-made controller: idle/walk/run blended by the \`speed\` parameter (m/s),
+   * plus \`trigger('jump')\` and one trigger per action. Uses the setup exported by
+   * RigForge when present, otherwise guesses from clip names.
+   */
+  autoStateMachine(setup?: ControllerSetup): AnimationStateMachine {
+    let found: ControllerSetup | undefined = setup;
+    if (!found) this.object.traverse((o) => { found ??= (o.userData?.rigforge as { controller?: ControllerSetup } | undefined)?.controller; });
+    const valid = (c: ControllerSetup | undefined) => c && c.locomotion?.every(([, n]) => this.actions.has(n));
+    return this.stateMachine(controllerStateMachine(valid(found) ? found! : guessController(this.clipNames)));
+  }
+
+  /** The controller setup this character would use (exported or guessed). */
+  get controllerSetup(): ControllerSetup {
+    let found: ControllerSetup | undefined;
+    this.object.traverse((o) => { found ??= (o.userData?.rigforge as { controller?: ControllerSetup } | undefined)?.controller; });
+    return found ?? guessController(this.clipNames);
+  }
+
+  get machineState(): AnimationStateMachine | null {
+    return this.machine;
+  }
+
+  // --- Layers ---------------------------------------------------------------------
+
+  /**
+   * Plays a clip on part of the body over the base animation, e.g.
+   * `playLayer('attack', 'Punch', { mask: 'upperBody' })` while walking.
+   */
+  playLayer(name: string, clipName: string, options: LayerOptions = {}): AnimationAction | null {
+    const src = this.actions.get(clipName)?.getClip() ?? this.findAction(clipName)?.getClip();
+    if (!src) {
+      console.warn(`[rigforge] No clip named "${clipName}" for layer "${name}".`);
+      return null;
+    }
+    this.stopLayer(name, 0);
+    const bones = this.maskBones(options.mask ?? 'upperBody');
+    const names = new Set(bones.map((b) => b.name));
+    const tracks = src.tracks.filter((t) => names.has(t.name.slice(0, t.name.lastIndexOf('.'))));
+    let clip = new AnimationClip(`${src.name}:${name}`, src.duration, tracks.map((t) => t.clone()));
+    const additive = !!options.additive;
+    const loop = options.loop ?? true;
+    let mixer: AnimationMixer | null = null;
+    let action: AnimationAction;
+    if (additive) {
+      clip = AnimationUtils.makeClipAdditive(clip);
+      action = this.mixer.clipAction(clip);
+      action.blendMode = AdditiveAnimationBlendMode;
+    } else {
+      mixer = new AnimationMixer(this.object);
+      action = mixer.clipAction(clip);
+    }
+    action.setLoop(loop ? LoopRepeat : LoopOnce, Infinity);
+    action.clampWhenFinished = !loop;
+    action.setEffectiveTimeScale(options.speed ?? 1);
+    action.play();
+    const fade = options.fade ?? 0.2;
+    const target = options.weight ?? 1;
+    const layer: Layer = { name, mixer, action, bones, weight: fade > 0 ? 0 : target, target, fadeRate: fade > 0 ? 1 / fade : Infinity, additive };
+    if (additive) action.setEffectiveWeight(layer.weight);
+    this.layers.set(name, layer);
+    if (!loop && mixer) {
+      mixer.addEventListener('finished', () => this.stopLayer(name, fade));
+    }
+    return action;
+  }
+
+  /** Fades a layer out and removes it. */
+  stopLayer(name: string, fade = 0.2): void {
+    const layer = this.layers.get(name);
+    if (!layer) return;
+    if (fade <= 0) {
+      this.removeLayer(layer);
+      return;
+    }
+    layer.target = 0;
+    layer.fadeRate = 1 / fade;
+  }
+
+  setLayerWeight(name: string, weight: number): void {
+    const layer = this.layers.get(name);
+    if (layer) layer.target = weight;
+  }
+
+  private removeLayer(layer: Layer): void {
+    layer.action.stop();
+    if (layer.mixer) layer.mixer.uncacheRoot(this.object);
+    else this.mixer.uncacheAction(layer.action.getClip());
+    this.layers.delete(layer.name);
+  }
+
+  private maskBones(mask: LayerMask): Object3D[] {
+    const roots = (Array.isArray(mask) ? mask : MASKS[mask]).map((n) => this.bone(n)).filter((b): b is Bone => !!b);
+    const out = new Set<Object3D>();
+    for (const r of roots) r.traverse((o) => { if ((o as Bone).isBone) out.add(o); });
+    return [...out];
+  }
+
+  private applyLayers(delta: number): void {
+    const saved = new Map<Object3D, [Quaternion, Vector3]>();
+    for (const layer of [...this.layers.values()]) {
+      // Fade toward the target weight.
+      const step = delta * layer.fadeRate;
+      layer.weight = layer.weight < layer.target ? Math.min(layer.target, layer.weight + step) : Math.max(layer.target, layer.weight - step);
+      if (layer.target === 0 && layer.weight === 0) {
+        this.removeLayer(layer);
+        continue;
+      }
+      if (layer.additive) {
+        layer.action.setEffectiveWeight(layer.weight);
+        continue;
+      }
+      // Override layer: pose from its own mixer, blended over the base pose per bone.
+      for (const b of layer.bones) saved.set(b, [b.quaternion.clone(), b.position.clone()]);
+      layer.mixer!.update(delta);
+      for (const b of layer.bones) {
+        const [q, p] = saved.get(b)!;
+        b.quaternion.copy(q.slerp(b.quaternion, layer.weight));
+        b.position.copy(p.lerp(b.position, layer.weight));
+      }
+    }
+  }
+
+  // --- Root motion ----------------------------------------------------------------
+
+  /**
+   * When on, horizontal hips travel in the clips moves `object` instead, so
+   * clips exported with root motion (not "in place") drive the character.
+   */
+  set rootMotion(on: boolean) {
+    this.rootMotionOn = on;
+    this.rootLast = null;
+  }
+
+  get rootMotion(): boolean {
+    return this.rootMotionOn;
+  }
+
+  private applyRootMotion(): void {
+    const hips = this.bone('hips');
+    if (!hips || !hips.parent) return;
+    this.rootRest ??= hips.position.clone();
+    const cur = hips.position.clone();
+    let d: Vector3;
+    if (!this.rootLast || this.rootLooped) d = this.rootLooped ? this.rootLastDelta.clone() : new Vector3();
+    else d = cur.clone().sub(this.rootLast);
+    d.y = 0;
+    this.rootLooped = false;
+    this.rootLast = cur;
+    this.rootLastDelta.copy(d);
+    // Hips-parent space -> world -> object's parent space (as a direction with scale, no translation).
+    hips.parent.updateWorldMatrix(true, false);
+    const world = d.clone().applyMatrix3(new Matrix3().setFromMatrix4(hips.parent.matrixWorld));
+    if (this.object.parent) {
+      const inv = new Matrix4().copy(this.object.parent.matrixWorld).invert();
+      world.applyMatrix3(new Matrix3().setFromMatrix4(inv));
+    }
+    if (d.lengthSq() > 0) this.object.position.add(world);
+    hips.position.x = this.rootRest.x;
+    hips.position.z = this.rootRest.z;
+  }
+
+  // --- Foot IK --------------------------------------------------------------------
+
+  /** Plants the feet on uneven ground. Pass `null` to disable. */
+  enableFootIK(options: FootIKOptions | null): FootIK | null {
+    if (!options) {
+      this.footIK = null;
+      return null;
+    }
+    const need = ['hips', 'leftUpperLeg', 'leftLowerLeg', 'leftFoot', 'rightUpperLeg', 'rightLowerLeg', 'rightFoot'].map((n) => this.bone(n));
+    if (need.some((b) => !b)) {
+      console.warn('[rigforge] Foot IK needs hips and both leg chains.');
+      return null;
+    }
+    const [hips, lu, ll, lf, ru, rl, rf] = need as Bone[];
+    this.footIK = new FootIK(this.object, hips, [
+      { upper: lu, lower: ll, foot: lf },
+      { upper: ru, lower: rl, foot: rf },
+    ], options);
+    return this.footIK;
   }
 
   /** Independent copy sharing geometry, materials and clips (for crowds). */

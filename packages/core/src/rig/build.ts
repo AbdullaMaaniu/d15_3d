@@ -40,6 +40,9 @@ export function buildSkinnedCharacter(
     if (!p) throw new Error(`Missing joint position for ${def.name}`);
     const parentPos = def.parent ? map.joints[def.parent] : [0, 0, 0];
     bone.position.set(p[0] - parentPos[0], p[1] - parentPos[1], p[2] - parentPos[2]);
+    // Rest transform, used by direct (non-retargeted) clips such as gaits and keyframes.
+    bone.userData.restQuaternion = bone.quaternion.clone();
+    bone.userData.restPosition = bone.position.clone();
     bones[def.name] = bone;
     list.push(bone);
     if (def.parent) bones[def.parent].add(bone);

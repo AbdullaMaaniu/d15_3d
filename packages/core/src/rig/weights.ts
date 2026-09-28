@@ -1,4 +1,5 @@
 import type { Kernels } from '../kernels';
+import type { GeodesicInput } from '../voxel/geodesic';
 import { tsKernels } from '../kernels';
 import { weldByPosition } from '../mesh/analyze';
 import type { BoneDef, JointMap } from '../skeleton';
@@ -31,25 +32,15 @@ type V3 = [number, number, number];
 export function boneSegments(defs: readonly BoneDef[], map: JointMap): Float32Array {
   const segs: number[] = [];
   const index = new Map(defs.map((d, i) => [d.name, i]));
+  const children = new Map<string, string[]>();
+  for (const d of defs) if (d.parent) children.set(d.parent, [...(children.get(d.parent) ?? []), d.name]);
   defs.forEach((def, i) => {
     const a = map.joints[def.name];
     if (!a) return;
     const push = (b: V3 | undefined) => {
       if (b) segs.push(i, a[0], a[1], a[2], b[0], b[1], b[2]);
     };
-    if (def.name === 'hips') {
-      push(map.joints.spine);
-      push(map.joints.leftUpperLeg);
-      push(map.joints.rightUpperLeg);
-      return;
-    }
-    if (def.name === 'upperChest') {
-      push(map.joints.neck);
-      push(map.joints.leftShoulder);
-      push(map.joints.rightShoulder);
-      return;
-    }
-    if (def.name.endsWith('Hand')) {
+    if (def.name.endsWith('Hand') && def.side) {
       // Palm: from the wrist toward each finger's base so the palm isn't claimed by fingers.
       const side = def.name.startsWith('left') ? 'left' : 'right';
       const bases = ['IndexProximal', 'MiddleProximal', 'RingProximal', 'LittleProximal'].map((f) => map.joints[`${side}${f}`]).filter(Boolean);
@@ -57,6 +48,12 @@ export function boneSegments(defs: readonly BoneDef[], map: JointMap): Float32Ar
         for (const b of bases) push(b);
         return;
       }
+    }
+    // Branching bones (pelvis, chest, ...) own the volume toward each of their children.
+    const kids = children.get(def.name) ?? [];
+    if (kids.length > 1) {
+      for (const k of kids) push(map.joints[k]);
+      return;
     }
     const child = def.primaryChild ? map.joints[def.primaryChild] : undefined;
     const target = child && index.has(def.primaryChild!) ? child : map.tails[def.name] ?? child;
@@ -78,6 +75,38 @@ export function computeSkinWeights(
   map: JointMap,
   options: WeightOptions = {},
 ): SkinWeights {
+  const job = prepareSkinWeights(positions, index, defs, map, options);
+  const t0 = job.now();
+  const dist = (options.kernels ?? tsKernels).boneDistances(job.input);
+  job.timings.distances = job.now() - t0;
+  return job.finish(dist);
+}
+
+/** Computes the geodesic distances in parallel (e.g. across workers), then the weights. */
+export async function computeSkinWeightsAsync(
+  positions: Float32Array,
+  index: Uint32Array | null,
+  defs: readonly BoneDef[],
+  map: JointMap,
+  distances: (input: GeodesicInput, onBone: (done: number) => void) => Promise<Float32Array>,
+  options: WeightOptions = {},
+): Promise<SkinWeights> {
+  const job = prepareSkinWeights(positions, index, defs, map, options);
+  const t0 = job.now();
+  const progress = options.onProgress ?? (() => {});
+  const dist = await distances(job.input, (done) => progress('Measuring geodesic distances', 0.2 + (0.6 * done) / defs.length));
+  job.timings.distances = job.now() - t0;
+  return job.finish(dist);
+}
+
+/** Everything before and after the geodesic distances, which callers may compute however they like. */
+function prepareSkinWeights(
+  positions: Float32Array,
+  index: Uint32Array | null,
+  defs: readonly BoneDef[],
+  map: JointMap,
+  options: WeightOptions,
+) {
   const kernels = options.kernels ?? tsKernels;
   const k = options.falloff ?? 4;
   const maxInf = options.maxInfluences ?? 4;
@@ -86,12 +115,15 @@ export function computeSkinWeights(
   const timings: Record<string, number> = {};
   const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
-  let minY = Infinity, maxY = -Infinity;
-  for (let i = 1; i < positions.length; i += 3) {
-    if (positions[i] < minY) minY = positions[i];
-    if (positions[i] > maxY) maxY = positions[i];
+  // Voxel size from the largest dimension (height for characters, length for long creatures).
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < positions.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      if (positions[i + k] < lo[k]) lo[k] = positions[i + k];
+      if (positions[i + k] > hi[k]) hi[k] = positions[i + k];
+    }
   }
-  const H = maxY - minY;
+  const H = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
   const dx = H / (options.resolution ?? 192);
 
   progress('Voxelizing', 0.05);
@@ -114,91 +146,116 @@ export function computeSkinWeights(
   }
 
   progress('Measuring geodesic distances', 0.2);
-  t0 = now();
-  const dist = kernels.boneDistances({ grid, boneCount: B, segments, points: pts, maxDistance: 0.45 * H });
-  timings.distances = now() - t0;
+  const input: GeodesicInput = { grid, boneCount: B, segments, points: pts, maxDistance: 0.45 * H };
+  return { input, timings, now, finish: (dist: Float32Array) => finishSkinWeights(dist) };
 
-  progress('Computing weights', 0.8);
-  t0 = now();
-  const eps = 0.25 * dx;
-  const dense = new Float32Array(welded * B);
-  let fallback = 0;
-  const segCount = segments.length / 7;
-  for (let w = 0; w < welded; w++) {
-    let any = false;
-    for (let b = 0; b < B; b++) if (Number.isFinite(dist[w * B + b])) { any = true; break; }
-    if (!any) {
-      // Disconnected part (e.g. floating accessory): Euclidean distance to bone segments.
-      fallback++;
-      for (let b = 0; b < B; b++) dist[w * B + b] = Infinity;
-      for (let s = 0; s < segCount; s++) {
-        const b = segments[s * 7];
-        const d = pointSegmentDistance(pts, w, segments, s);
-        if (d < dist[w * B + b]) dist[w * B + b] = d;
-      }
-    }
-    let sum = 0;
-    for (let b = 0; b < B; b++) {
-      const d = dist[w * B + b];
-      const v = Number.isFinite(d) ? 1 / Math.pow(Math.max(d, eps), k) : 0;
-      dense[w * B + b] = v;
-      sum += v;
-    }
-    if (sum > 0) for (let b = 0; b < B; b++) dense[w * B + b] /= sum;
-  }
-
-  if (smoothIt > 0 && index) {
-    const adj = buildAdjacency(index, ids, welded);
-    const tmp = new Float32Array(dense.length);
-    for (let it = 0; it < smoothIt; it++) {
-      for (let w = 0; w < welded; w++) {
-        const s0 = adj.offsets[w], s1 = adj.offsets[w + 1];
-        const cnt = s1 - s0;
-        for (let b = 0; b < B; b++) {
-          let acc = 0;
-          for (let j = s0; j < s1; j++) acc += dense[adj.neighbors[j] * B + b];
-          const self = dense[w * B + b];
-          tmp[w * B + b] = cnt ? 0.5 * self + 0.5 * (acc / cnt) : self;
+  function finishSkinWeights(dist: Float32Array): SkinWeights {
+    progress('Computing weights', 0.8);
+    t0 = now();
+    const eps = 0.25 * dx;
+    // x^k; integer exponents (the usual case) by multiplication, which is much faster than Math.pow.
+    const falloff = Number.isInteger(k) && k >= 1 && k <= 8
+      ? (x: number) => { let r = x; for (let i = 1; i < k; i++) r *= x; return r; }
+      : (x: number) => Math.pow(x, k);
+    const dense = new Float32Array(welded * B);
+    let fallback = 0;
+    const segCount = segments.length / 7;
+    for (let w = 0; w < welded; w++) {
+      let any = false;
+      for (let b = 0; b < B; b++) if (Number.isFinite(dist[w * B + b])) { any = true; break; }
+      if (!any) {
+        // Disconnected part (e.g. floating accessory): Euclidean distance to bone segments.
+        fallback++;
+        for (let b = 0; b < B; b++) dist[w * B + b] = Infinity;
+        for (let s = 0; s < segCount; s++) {
+          const b = segments[s * 7];
+          const d = pointSegmentDistance(pts, w, segments, s);
+          if (d < dist[w * B + b]) dist[w * B + b] = d;
         }
       }
-      dense.set(tmp);
+      let sum = 0;
+      for (let b = 0; b < B; b++) {
+        const d = dist[w * B + b];
+        const v = Number.isFinite(d) ? 1 / falloff(Math.max(d, eps)) : 0;
+        dense[w * B + b] = v;
+        sum += v;
+      }
+      if (sum > 0) for (let b = 0; b < B; b++) dense[w * B + b] /= sum;
     }
-  }
 
-  // Top-N influences per welded vertex, then expand to all vertices.
-  const wIndex = new Uint16Array(welded * 4);
-  const wWeight = new Float32Array(welded * 4);
-  const order = new Int32Array(B);
-  for (let w = 0; w < welded; w++) {
-    for (let b = 0; b < B; b++) order[b] = b;
-    const row = w * B;
-    const top = Array.from(order).sort((p, q) => dense[row + q] - dense[row + p]).slice(0, maxInf);
-    let sum = 0;
-    for (const b of top) sum += dense[row + b] > 0.01 ? dense[row + b] : 0;
-    for (let j = 0; j < 4; j++) {
-      const b = top[j];
-      const v = j < maxInf && b !== undefined && sum > 0 && dense[row + b] > 0.01 ? dense[row + b] / sum : 0;
-      wIndex[w * 4 + j] = b ?? 0;
-      wWeight[w * 4 + j] = v;
+    if (smoothIt > 0 && index) {
+      const adj = buildAdjacency(index, ids, welded);
+      const tmp = new Float32Array(dense.length);
+      const acc = new Float64Array(B);
+      for (let it = 0; it < smoothIt; it++) {
+        for (let w = 0; w < welded; w++) {
+          const s0 = adj.offsets[w], s1 = adj.offsets[w + 1];
+          const cnt = s1 - s0;
+          const row = w * B;
+          if (!cnt) {
+            for (let b = 0; b < B; b++) tmp[row + b] = dense[row + b];
+            continue;
+          }
+          // Whole neighbour rows at a time: contiguous reads instead of a stride of B.
+          acc.fill(0);
+          for (let j = s0; j < s1; j++) {
+            const nrow = adj.neighbors[j] * B;
+            for (let b = 0; b < B; b++) acc[b] += dense[nrow + b];
+          }
+          for (let b = 0; b < B; b++) tmp[row + b] = 0.5 * dense[row + b] + 0.5 * (acc[b] / cnt);
+        }
+        dense.set(tmp);
+      }
     }
-    if (sum === 0) {
-      wIndex[w * 4] = top[0] ?? 0;
-      wWeight[w * 4] = 1;
+
+    // Top-N influences per welded vertex (partial selection; ties keep the lower bone
+    // index, like a stable sort), then expand to all vertices.
+    const wIndex = new Uint16Array(welded * 4);
+    const wWeight = new Float32Array(welded * 4);
+    const top = new Int32Array(maxInf);
+    const topV = new Float64Array(maxInf);
+    for (let w = 0; w < welded; w++) {
+      const row = w * B;
+      let n = 0;
+      for (let b = 0; b < B; b++) {
+        const v = dense[row + b];
+        if (n === maxInf && v <= topV[n - 1]) continue;
+        let j = n < maxInf ? n++ : n - 1;
+        while (j > 0 && topV[j - 1] < v) {
+          top[j] = top[j - 1];
+          topV[j] = topV[j - 1];
+          j--;
+        }
+        top[j] = b;
+        topV[j] = v;
+      }
+      let sum = 0;
+      for (let j = 0; j < n; j++) sum += topV[j] > 0.01 ? topV[j] : 0;
+      for (let j = 0; j < 4; j++) {
+        const inTop = j < n;
+        const v = inTop && sum > 0 && topV[j] > 0.01 ? topV[j] / sum : 0;
+        wIndex[w * 4 + j] = inTop ? top[j] : 0;
+        wWeight[w * 4 + j] = v;
+      }
+      if (sum === 0) {
+        wIndex[w * 4] = n ? top[0] : 0;
+        wWeight[w * 4] = 1;
+      }
     }
+    const nVerts = positions.length / 3;
+    const skinIndex = new Uint16Array(nVerts * 4);
+    const skinWeight = new Float32Array(nVerts * 4);
+    for (let i = 0; i < nVerts; i++) {
+      const w = ids[i];
+      for (let j = 0; j < 4; j++) {
+        skinIndex[i * 4 + j] = wIndex[w * 4 + j];
+        skinWeight[i * 4 + j] = wWeight[w * 4 + j];
+      }
+    }
+    timings.weights = now() - t0;
+    progress('Done', 1);
+    return { skinIndex, skinWeight, fallbackVertices: fallback, kernel: kernels.name, timings };
   }
-  const nVerts = positions.length / 3;
-  const skinIndex = new Uint16Array(nVerts * 4);
-  const skinWeight = new Float32Array(nVerts * 4);
-  for (let i = 0; i < nVerts; i++) {
-    const w = ids[i];
-    for (let j = 0; j < 4; j++) {
-      skinIndex[i * 4 + j] = wIndex[w * 4 + j];
-      skinWeight[i * 4 + j] = wWeight[w * 4 + j];
-    }
-  }
-  timings.weights = now() - t0;
-  progress('Done', 1);
-  return { skinIndex, skinWeight, fallbackVertices: fallback, kernel: kernels.name, timings };
 }
 
 function pointSegmentDistance(pts: Float32Array, w: number, segs: Float32Array, s: number): number {
@@ -212,20 +269,32 @@ function pointSegmentDistance(pts: Float32Array, w: number, segs: Float32Array, 
   return Math.hypot(px - (ax + abx * t), py - (ay + aby * t), pz - (az + abz * t));
 }
 
+/** Unique welded-vertex neighbours in CSR form (sorted edge keys instead of per-vertex Sets). */
 function buildAdjacency(index: Uint32Array, ids: Uint32Array, welded: number) {
-  const sets: Array<Set<number>> = Array.from({ length: welded }, () => new Set<number>());
+  const keys = new Float64Array(index.length * 2);
+  let m = 0;
+  const add = (a: number, b: number) => {
+    if (a === b) return;
+    keys[m++] = a * welded + b;
+    keys[m++] = b * welded + a;
+  };
   for (let t = 0; t < index.length; t += 3) {
     const a = ids[index[t]], b = ids[index[t + 1]], c = ids[index[t + 2]];
-    if (a !== b) { sets[a].add(b); sets[b].add(a); }
-    if (b !== c) { sets[b].add(c); sets[c].add(b); }
-    if (a !== c) { sets[a].add(c); sets[c].add(a); }
+    add(a, b);
+    add(b, c);
+    add(a, c);
   }
+  const sorted = keys.subarray(0, m).sort();
   const offsets = new Int32Array(welded + 1);
-  for (let w = 0; w < welded; w++) offsets[w + 1] = offsets[w] + sets[w].size;
-  const neighbors = new Int32Array(offsets[welded]);
-  for (let w = 0; w < welded; w++) {
-    let j = offsets[w];
-    for (const n of sets[w]) neighbors[j++] = n;
+  const neighbors = new Int32Array(m);
+  let n = 0;
+  for (let i = 0; i < m; i++) {
+    const k = sorted[i];
+    if (i > 0 && k === sorted[i - 1]) continue;
+    const a = Math.floor(k / welded);
+    neighbors[n++] = k - a * welded;
+    offsets[a + 1]++;
   }
-  return { offsets, neighbors };
+  for (let w = 0; w < welded; w++) offsets[w + 1] += offsets[w];
+  return { offsets, neighbors: neighbors.subarray(0, n) };
 }

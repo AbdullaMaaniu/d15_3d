@@ -94,29 +94,45 @@ export async function exportCharacter(root: Object3D, clips: AnimationClip[], op
   }
   doc.getRoot().getAsset().generator = 'RigForge';
 
-  progress('Optimizing');
-  await doc.transform(dedup(), prune({ keepAttributes: true }));
-  if (doResample) await doc.transform(resample({ tolerance: 1e-4 }));
-
-  if (webp || Number.isFinite(maxTex)) {
-    progress('Compressing textures');
-    const ok = await compressTextures(doc, { webp, maxSize: maxTex });
-    if (!ok) warnings.push('Texture compression needs OffscreenCanvas (a browser); textures were left unchanged.');
-  }
-
-  if (meshopt) {
-    progress('Compressing geometry and animation');
-    await doc.transform(reorder({ encoder: MeshoptEncoder }), quantize());
-    doc.createExtension(EXTMeshoptCompression).setRequired(true).setEncoderOptions({
-      method: EXTMeshoptCompression.EncoderMethod.FILTER,
-    });
-  }
+  warnings.push(...(await optimizeDocument(doc, { webp, meshopt, resample: doResample, maxTextureSize: maxTex, onProgress: progress })));
 
   progress('Writing GLB');
   const glb = await io.writeBinary(doc);
   const after = sizeBreakdown(doc, glb.byteLength);
   return { glb, before, after, warnings };
 }
+
+/**
+ * Optimizes a glTF document in place (dedup/prune, keyframe reduction, texture
+ * downscale/WebP where a canvas is available, meshopt). Returns warnings.
+ */
+export async function optimizeDocument(
+  doc: Document,
+  options: { webp?: boolean; meshopt?: boolean; resample?: boolean; maxTextureSize?: number; onProgress?: (stage: string) => void } = {},
+): Promise<string[]> {
+  const warnings: string[] = [];
+  const progress = options.onProgress ?? (() => {});
+  const maxTex = options.maxTextureSize ?? Infinity;
+  progress('Optimizing');
+  await doc.transform(dedup(), prune({ keepAttributes: true }));
+  if (options.resample !== false) await doc.transform(resample({ tolerance: 1e-4 }));
+  if (options.webp || Number.isFinite(maxTex)) {
+    progress('Compressing textures');
+    const ok = await compressTextures(doc, { webp: !!options.webp, maxSize: maxTex });
+    if (!ok) warnings.push('Texture compression needs OffscreenCanvas (a browser); textures were left unchanged.');
+  }
+  if (options.meshopt) {
+    progress('Compressing geometry and animation');
+    await MeshoptEncoder.ready;
+    await doc.transform(reorder({ encoder: MeshoptEncoder }), quantize());
+    doc.createExtension(EXTMeshoptCompression).setRequired(true).setEncoderOptions({
+      method: EXTMeshoptCompression.EncoderMethod.FILTER,
+    });
+  }
+  return warnings;
+}
+
+export const EXPORT_PRESETS = PRESETS;
 
 async function compressTextures(doc: Document, opts: { webp: boolean; maxSize: number }): Promise<boolean> {
   const textures = doc.getRoot().listTextures();

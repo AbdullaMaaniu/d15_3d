@@ -157,3 +157,41 @@ pre.code { margin: 0; background: #0d0f13; border: 1px solid var(--line); border
   .empty .card { padding: 16px; }
   .empty h1 { font-size: 20px; }
 }
+
+.timeline .track { position: relative; flex: 1; min-width: 60px; display: flex; align-items: center; }
+.timeline .track input { flex: 1; }
+.timeline .keys { position: absolute; left: 7px; right: 7px; top: -9px; height: 8px; pointer-events: none; }
+.timeline .key { position: absolute; width: 7px; height: 7px; margin-left: -3.5px; transform: rotate(45deg); background: #6b7383; }
+.timeline .key.mine { background: var(--accent); }
+
+.grid2 .text, .grid3 .text { width: 100%; }
+
+.meshy-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; max-height: 320px; overflow-y: auto; }
+.meshy-item { display: flex; flex-direction: column; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: #12151a; cursor: pointer; text-align: left; }
+.meshy-item:hover:not(:disabled) { border-color: var(--accent); }
+.meshy-item img, .meshy-ph { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 5px; background: #0d0f13; display: grid; place-items: center; color: var(--faint); font-size: 11px; }
+.meshy-name { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Test drive */
+.drive { position: absolute; inset: 0; }
+.drive canvas { cursor: grab; }
+.drive canvas:active { cursor: grabbing; }
+.drive .overlay { top: 16px; }
+.drive-top { position: absolute; top: 16px; right: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.drive-top .pill.check { color: var(--text); cursor: pointer; }
+.drive-actions { position: absolute; right: 16px; bottom: 16px; display: flex; flex-wrap: wrap-reverse; gap: 6px; justify-content: flex-end; max-width: min(420px, 60%); }
+.drive-actions kbd { font-family: var(--mono); font-size: 10px; opacity: 0.7; }
+.drive-pad { display: none; position: absolute; left: 24px; bottom: 24px; width: 120px; height: 120px; border-radius: 50%; background: rgba(23, 26, 32, 0.45); border: 1px solid rgba(255, 255, 255, 0.25); touch-action: none; align-items: center; justify-content: center; }
+.drive-pad .knob { width: 48px; height: 48px; border-radius: 50%; background: rgba(255, 255, 255, 0.55); pointer-events: none; }
+@media (pointer: coarse) {
+  .drive-pad { display: flex; }
+  .drive-help { display: none; }
+}
+@media (max-width: 860px) {
+  .drive .overlay { top: 8px; }
+  .drive-top { top: 8px; right: 8px; }
+  .drive-actions { right: 8px; bottom: 8px; }
+}
+
+.seg.wrap { flex-wrap: wrap; }
+.seg.wrap button { flex: 1 0 auto; }

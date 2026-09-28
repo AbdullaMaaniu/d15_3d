@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useThree, type ThreeEvent } from '@react-three/fiber';
 import { Line } from '@react-three/drei';
 import { Plane, Raycaster, Vector2, Vector3 } from 'three';
-import { humanoidDefs } from '@rigforge/core';
-import { useStore } from '../store';
+import { skeletonDefs, useStore } from '../store';
 
 type V3 = [number, number, number];
 
@@ -32,7 +31,8 @@ export function JointEditor() {
   const [hover, setHover] = useState<string | null>(null);
   const drag = useRef<{ name: string; tail: boolean; plane: Plane } | null>(null);
 
-  const defs = useMemo(() => humanoidDefs(fingers), [fingers]);
+  const rigType = useStore((s) => s.rigType);
+  const defs = useMemo(() => skeletonDefs(), [fingers, rigType]);
 
   useEffect(() => {
     const el = gl.domElement;

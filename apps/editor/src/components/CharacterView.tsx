@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import {
   AnimationMixer,
   Color,
@@ -10,11 +10,17 @@ import {
   MeshStandardMaterial,
   SkeletonHelper,
   type AnimationAction,
+  Matrix3,
+  Quaternion,
+  Vector3,
   type Material,
+  type Mesh,
   type Object3D,
   type SkinnedMesh,
 } from 'three';
 import { useStore } from '../store';
+import { KeyEditor } from './KeyEditor';
+import { SpringBones } from '@rigforge/three';
 
 /** Hue per bone so the dominant-influence view reads as distinct regions. */
 function boneColor(i: number, out: Color): Color {
@@ -44,10 +50,21 @@ export function CharacterView() {
   const testClip = useStore((s) => s.testClip);
   const seek = useStore((s) => s.seek);
   const setStore = useStore((s) => s.set);
+  const paint = useStore((s) => s.paint);
+  const keyEditing = useStore((s) => s.keyEdit.clipId !== null);
+  const weightsVersion = useStore((s) => s.weightsVersion);
 
   const meshes = useMemo(() => skinnedMeshes(character.root), [character]);
   const original = useMemo(() => new Map(meshes.map((m) => [m, m.material])), [meshes]);
   const mixer = useMemo(() => new AnimationMixer(character.root), [character]);
+  const springConfig = useStore((s) => s.springs);
+  const springPreview = useStore((s) => s.springPreview && !s.paint.active && s.keyEdit.clipId === null);
+  const springs = useMemo(() => {
+    if (!springPreview || !springConfig.chains.length) return null;
+    // Start from the bind pose so rest directions are measured correctly.
+    meshes.forEach((m) => m.skeleton.pose());
+    return new SpringBones(character.root, springConfig);
+  }, [character, springConfig, springPreview, meshes]);
   const current = useRef<AnimationAction | null>(null);
   const lastTimeUpdate = useRef(0);
 
@@ -76,7 +93,16 @@ export function CharacterView() {
     action.setEffectiveTimeScale(speed);
     action.reset().setEffectiveWeight(1).play();
     const prev = current.current;
-    if (prev && prev !== action) prev.crossFadeTo(action, 0.25, false);
+    const editing = useStore.getState().keyEdit.clipId !== null;
+    if (editing) {
+      // Keyframing: swap instantly and stay on the current frame.
+      if (prev && prev !== action) {
+        prev.stop();
+        mixer.uncacheAction(prev.getClip());
+      }
+      action.time = Math.min(useStore.getState().time, clip.duration);
+      mixer.update(0);
+    } else if (prev && prev !== action) prev.crossFadeTo(action, 0.25, false);
     current.current = action;
     return undefined;
   }, [clip, loop, speed, mixer, meshes]);
@@ -95,6 +121,7 @@ export function CharacterView() {
 
   useFrame((_, delta) => {
     if (playing) mixer.update(Math.min(delta, 0.1));
+    springs?.update(Math.min(delta, 0.1));
     const now = performance.now();
     if (current.current && now - lastTimeUpdate.current > 100) {
       lastTimeUpdate.current = now;
@@ -128,7 +155,7 @@ export function CharacterView() {
         mesh.material = heat;
       }
     }
-  }, [shading, selectedBone, meshes, original, clay, heat]);
+  }, [shading, selectedBone, meshes, original, clay, heat, weightsVersion]);
 
   const helper = useMemo(() => {
     const h = new SkeletonHelper(character.root);
@@ -138,12 +165,78 @@ export function CharacterView() {
     return h;
   }, [character]);
 
+  const brush = useBrush();
+
   return (
     <>
-      <primitive object={character.root} />
+      <primitive object={character.root} {...(paint.active ? brush.handlers : {})} />
       {showSkeleton && <primitive object={helper} />}
+      {keyEditing && <KeyEditor root={character.root} />}
+      {paint.active && (
+        <mesh ref={brush.cursor} visible={false} renderOrder={30}>
+          <ringGeometry args={[paint.radius * 0.92, paint.radius, 48]} />
+          <meshBasicMaterial color={paint.mode === 'subtract' ? '#60a5fa' : paint.mode === 'smooth' ? '#a3e635' : '#fb923c'} depthTest={false} transparent opacity={0.9} toneMapped={false} />
+        </mesh>
+      )}
     </>
   );
+}
+
+/** Pointer handling for the weight brush: drag to paint, Alt/right-click to pick the bone under the cursor. */
+function useBrush() {
+  const cursor = useRef<Mesh>(null);
+  const controls = useThree((s) => s.controls) as unknown as { enabled: boolean } | null;
+  const down = useRef(false);
+  const last = useRef<Vector3 | null>(null);
+  const place = (e: ThreeEvent<PointerEvent>) => {
+    const c = cursor.current;
+    if (!c || !e.face) return;
+    const n = e.face.normal.clone().applyMatrix3(new Matrix3().getNormalMatrix(e.object.matrixWorld)).normalize();
+    c.position.copy(e.point).addScaledVector(n, 0.002);
+    c.quaternion.copy(new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), n));
+    c.visible = true;
+  };
+  const dabAt = (p: Vector3) => {
+    const { radius } = useStore.getState().paint;
+    if (last.current && last.current.distanceTo(p) < radius * 0.25) return;
+    last.current = p.clone();
+    useStore.getState().dab([p.x, p.y, p.z]);
+  };
+  const end = () => {
+    if (!down.current) return;
+    down.current = false;
+    last.current = null;
+    if (controls) controls.enabled = true;
+  };
+  const handlers = {
+    onPointerDown: (e: ThreeEvent<PointerEvent>) => {
+      e.stopPropagation();
+      if (e.altKey || e.button === 2) {
+        useStore.getState().pickBoneAt([e.point.x, e.point.y, e.point.z]);
+        return;
+      }
+      if (e.button !== 0) return;
+      down.current = true;
+      if (controls) controls.enabled = false;
+      (e.target as Element | null)?.setPointerCapture?.(e.pointerId);
+      useStore.getState().beginStroke();
+      dabAt(e.point);
+    },
+    onPointerMove: (e: ThreeEvent<PointerEvent>) => {
+      place(e);
+      if (down.current) dabAt(e.point);
+    },
+    onPointerUp: end,
+    onPointerLeave: () => {
+      if (cursor.current) cursor.current.visible = false;
+    },
+    onContextMenu: (e: ThreeEvent<MouseEvent>) => e.nativeEvent.preventDefault(),
+  };
+  useEffect(() => {
+    window.addEventListener('pointerup', end);
+    return () => window.removeEventListener('pointerup', end);
+  });
+  return { cursor, handlers };
 }
 
 function paintWeights(mesh: SkinnedMesh, bone: string | null) {

@@ -4,9 +4,11 @@ export interface SnippetInput {
   clipNames: string[];
   /** Name of the clip to start with (defaults to an idle-like clip or the first). */
   initial?: string;
+  /** Exported controller roles, shown in the state-machine snippet. */
+  controller?: { locomotion: Array<[number, string]>; jump?: string; actions?: Record<string, string> };
 }
 
-export type SnippetKind = 'three' | 'r3f' | 'vanilla';
+export type SnippetKind = 'three' | 'r3f' | 'vanilla' | 'state-machine';
 
 function pickInitial(input: SnippetInput): string {
   return input.initial ?? input.clipNames.find((n) => /idle/i.test(n)) ?? input.clipNames[0] ?? 'Idle';
@@ -40,6 +42,36 @@ window.addEventListener('keydown', (e) => {
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
+  character.update(clock.getDelta());
+  renderer.render(scene, camera);
+});
+`;
+  }
+  if (kind === 'state-machine') {
+    const c = input.controller;
+    const roles = c
+      ? [
+          `//   speed blend: ${c.locomotion.map(([v, n]) => `${n} @ ${v} m/s`).join(', ')}`,
+          c.jump ? `//   sm.trigger('jump') → ${c.jump}` : '',
+          ...Object.entries(c.actions ?? {}).map(([k, n]) => `//   sm.trigger('${k}') → ${n}`),
+        ].filter(Boolean).join('\n')
+      : '//   (roles guessed from clip names)';
+    const firstAction = Object.keys(c?.actions ?? {})[0];
+    return `import * as THREE from 'three';
+import { loadCharacter } from '@rigforge/three';
+
+const character = await loadCharacter('${input.url}');
+scene.add(character.object);
+
+// The controller setup ships inside the file:
+${roles}
+const sm = character.autoStateMachine();
+
+character.enableFootIK({ ground: [terrain] }); // optional: feet follow uneven ground
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  sm.set('speed', player.velocity.length()); // meters per second
+  if (input.jumpPressed) sm.trigger('jump');${firstAction ? `\n  if (input.actionPressed) sm.trigger('${firstAction}');` : ''}
   character.update(clock.getDelta());
   renderer.render(scene, camera);
 });

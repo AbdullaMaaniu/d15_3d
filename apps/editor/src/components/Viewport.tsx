@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { GizmoHelper, GizmoViewport, Grid, OrbitControls } from '@react-three/drei';
-import { PMREMGenerator, type Mesh } from 'three';
+import { BufferAttribute, BufferGeometry, PMREMGenerator, type Mesh } from 'three';
+import { polygonEdges } from '../lib/remesh';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { computeNormalization } from '@rigforge/core';
-import { useStore } from '../store';
+import { fitFor, useStore } from '../store';
 import { JointEditor } from './JointEditor';
+import { PropEditor } from './PropEditor';
+import { CreatureEditor, InteriorClickMesh } from './CreatureEditor';
 import { CharacterView } from './CharacterView';
 
 function RoomEnv() {
@@ -27,12 +30,32 @@ function RoomEnv() {
 /** The imported model, previewed with the current orientation and scale. */
 function SourceView() {
   const prepared = useStore((s) => s.prepared);
+  const rigType = useStore((s) => s.rigType);
   const rotation = useStore((s) => s.rotation);
   const height = useStore((s) => s.height);
   const ref = useRef<Mesh>(null);
+  const wireframe = useStore((s) => s.wireframe);
+  const edges = useMemo(() => {
+    if (!wireframe || !prepared) return null;
+    const g = new BufferGeometry();
+    g.setAttribute('position', prepared.geometry.attributes.position);
+    g.setIndex(new BufferAttribute(polygonEdges(prepared.geometry), 1));
+    return g;
+  }, [wireframe, prepared]);
+  useEffect(() => () => edges?.dispose(), [edges]);
+  // Push the surface back a little so the edges don't z-fight with it.
+  useEffect(() => {
+    if (!prepared) return;
+    for (const m of prepared.materials) {
+      m.polygonOffset = !!edges;
+      m.polygonOffsetFactor = edges ? 1 : 0;
+      m.polygonOffsetUnits = edges ? 1 : 0;
+      m.needsUpdate = true;
+    }
+  }, [prepared, edges]);
   const matrix = useMemo(
-    () => (prepared ? computeNormalization(prepared.geometry, { rotation, targetHeight: height }).matrix : null),
-    [prepared, rotation, height],
+    () => (prepared ? computeNormalization(prepared.geometry, { rotation, targetHeight: height, fit: fitFor(rigType) }).matrix : null),
+    [prepared, rotation, height, rigType],
   );
   useEffect(() => {
     if (ref.current && matrix) {
@@ -41,7 +64,15 @@ function SourceView() {
     }
   }, [matrix]);
   if (!prepared) return null;
-  return <mesh ref={ref} geometry={prepared.geometry} material={prepared.materials} matrixAutoUpdate={false} castShadow />;
+  return (
+    <mesh ref={ref} geometry={prepared.geometry} material={prepared.materials} matrixAutoUpdate={false} castShadow>
+      {edges && (
+        <lineSegments geometry={edges} raycast={() => null}>
+          <lineBasicMaterial color="#0b0d12" transparent opacity={0.6} />
+        </lineSegments>
+      )}
+    </mesh>
+  );
 }
 
 /** Normalized mesh shown see-through while placing joints. */
@@ -82,14 +113,31 @@ function FrontIndicator({ height }: { height: number }) {
 function CameraTarget() {
   const height = useStore((s) => s.height);
   const step = useStore((s) => s.step);
+  const normalized = useStore((s) => s.normalized);
   const controls = useThree((s) => s.controls) as unknown as { target: import('three').Vector3; update(): void } | null;
   const camera = useThree((s) => s.camera);
+  const aspect = useThree((s) => s.size.width / Math.max(1, s.size.height));
   useEffect(() => {
     if (!controls) return;
-    controls.target.set(0, height * 0.52, 0);
-    camera.position.set(0, height * 0.62, height * 2.1);
+    // Frame the whole model: tall characters by height, wide props by width.
+    let width = height * 0.6, depth = height * 0.4, tall = height, midY = height * 0.5;
+    if (normalized) {
+      normalized.geometry.computeBoundingBox();
+      const bb = normalized.geometry.boundingBox!;
+      width = bb.max.x - bb.min.x;
+      depth = bb.max.z - bb.min.z;
+      tall = bb.max.y - bb.min.y;
+      midY = (bb.min.y + bb.max.y) / 2;
+    }
+    const fit = Math.max(tall, width / Math.min(aspect, 1.6), depth);
+    controls.target.set(0, midY, 0);
+    const rt = useStore.getState().rigType;
+    if (rt === 'quadruped' || rt === 'creature') {
+      // Three-quarter side view: gaits read best from the side.
+      camera.position.set(fit * 1.45, midY + fit * 0.35, fit * 0.95);
+    } else camera.position.set(0, midY + fit * 0.18, depth / 2 + fit * 2.1);
     controls.update();
-  }, [controls, camera, height, step]);
+  }, [controls, camera, height, step, normalized, aspect]);
   return null;
 }
 
@@ -111,6 +159,10 @@ export function Viewport() {
   const character = useStore((s) => s.character);
   const height = useStore((s) => s.height);
   const hasModel = useStore((s) => !!s.prepared);
+  const rigType = useStore((s) => s.rigType);
+  const isProp = rigType === 'prop';
+  const accessoryMode = useStore((s) => s.accessoryMode);
+  const addAccessoryJoint = useStore((s) => s.addAccessoryJoint);
 
   return (
     <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 1.1, 3.8], fov: 38, near: 0.01, far: 200 }} gl={{ preserveDrawingBuffer: true }}>
@@ -128,12 +180,14 @@ export function Viewport() {
 
       {(step === 'import' || step === 'orient') && hasModel && <SourceView />}
       {step === 'orient' && <FrontIndicator height={height} />}
-      {step === 'rig' && !character && (
+      {step === 'rig' && !character && rigType === 'creature' && <CreatureEditor />}
+      {step === 'rig' && !character && !isProp && rigType !== 'creature' && (
         <>
-          <NormalizedView />
+          {accessoryMode ? <InteriorClickMesh onPlace={addAccessoryJoint} /> : <NormalizedView />}
           <JointEditor />
         </>
       )}
+      {step === 'rig' && !character && isProp && <PropEditor />}
       {character && step !== 'import' && step !== 'orient' && <CharacterView />}
 
       {!small && (
