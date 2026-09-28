@@ -2,6 +2,8 @@ import { Suspense, useEffect } from 'react';
 import { STEPS, useStore, type Step } from './store';
 import { Viewport } from './components/Viewport';
 import { TestDrive } from './components/TestDrive';
+import { RigPreview } from './components/RigPreview';
+import { JointLegend } from './components/JointLegend';
 import { Timeline } from './components/Timeline';
 import { Busy, FilePicker, Logo } from './components/ui';
 import { RestoreBanner } from './components/RestoreBanner';
@@ -28,6 +30,8 @@ export function App() {
   const openProject = useStore((s) => s.openProject);
   const saveProjectFile = useStore((s) => s.saveProjectFile);
   const driving = useStore((s) => !!s.testDrive) && step === 'export';
+  const hasJoints = useStore((s) => !!s.joints);
+  const rigType = useStore((s) => s.rigType);
 
   // Leaving the export step ends a test drive.
   useEffect(() => {
@@ -114,8 +118,10 @@ export function App() {
           )}
           {character && !driving && step !== 'import' && step !== 'orient' && <ShadingToolbar />}
           {character && !driving && (step === 'animate' || step === 'export' || step === 'rig') && <Timeline />}
+          {step === 'rig' && !character && hasJoints && (rigType === 'humanoid' || rigType === 'quadruped') && <RigPreview />}
           <div className="overlay" hidden={driving}>
             {step === 'rig' && !character && <span className="pill">Drag markers · Orbit: drag empty space · Zoom: scroll</span>}
+            {step === 'rig' && !character && (rigType === 'humanoid' || rigType === 'quadruped') && <JointLegend />}
             {step === 'orient' && <span className="pill">Orange arrow = front (+Z)</span>}
           </div>
         </section>

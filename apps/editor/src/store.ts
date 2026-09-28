@@ -69,7 +69,7 @@ import {
 } from '@rigforge/core';
 import presetPack from '@rigforge/presets/clips.json';
 import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleCreature, loadSampleProp, type LoadedFile } from './lib/loaders';
-import { computeWeights, detectJoints, detectQuadrupedJoints, type WeightSettings } from './lib/rigClient';
+import { computeWeights, detectJoints, detectQuadrupedJoints, type SkeletonKind, type WeightSettings } from './lib/rigClient';
 import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
 import { remeshPrepared, type RemeshInfo, type RemeshSettings } from './lib/remesh';
 import { guessController, type ControllerSetup, type SpringChainDef, type SpringColliderDef, type SpringConfig } from '@rigforge/three';
@@ -210,6 +210,10 @@ interface State {
   originalPrepared: PreparedMesh | null;
   /** Show polygon edges (quads drawn as quads). */
   wireframe: boolean;
+  /** Live rigged preview while placing joints. */
+  rigPreview: boolean;
+  /** Marker under the pointer (joint name, or name + ':tail'), shared with the colour key. */
+  hoverJoint: string | null;
 }
 
 interface Actions {
@@ -369,6 +373,8 @@ export const useStore = create<State & Actions>()((set, get) => ({
   remeshInfo: null,
   originalPrepared: null,
   wireframe: false,
+  rigPreview: true,
+  hoverJoint: null,
 
   set: (key, value) => set({ [key]: value } as any),
   setError: (error) => set({ error }),
@@ -530,14 +536,8 @@ export const useStore = create<State & Actions>()((set, get) => ({
     set({ busy: 'Computing skin weights…', progress: 0, error: null });
     let finished = false;
     try {
-      const { positions, index } = arrays(normalized.geometry);
       const t0 = performance.now();
-      const quad = get().rigType === 'quadruped';
-      const creature = get().rigType === 'creature';
-      const defs = skeletonDefs();
-      const hasExtras = get().extraBones.length > 0;
-      const rigJoints = creature || hasExtras ? { joints: joints.joints, tails: autoTails(defs, joints.joints, joints.tails) } : joints;
-      const kind = creature || hasExtras ? [...defs] : quad ? 'quadruped' : fingers ? 'humanoid' : 'humanoid-nofingers';
+      const { positions, index, defs, rigJoints, kind, quad, creature } = rigInputs();
       const w = await computeWeights(positions, index, rigJoints, kind, weightSettings, (stage, fraction) => {
         // Progress messages cross the worker boundary asynchronously; drop any that arrive late.
         if (!finished && fraction < 1) set({ busy: `${stage}…`, progress: fraction });
@@ -1177,6 +1177,20 @@ export function fitFor(rigType: RigType): 'height' | 'max' {
 
 function defaultHeight(rigType: RigType): number {
   return rigType === 'humanoid' ? 1.8 : rigType === 'quadruped' ? 0.8 : rigType === 'creature' ? 1 : 1;
+}
+
+/** What skin weights and the skinned mesh are built from, for the current joints. */
+export function rigInputs() {
+  const { normalized, joints, fingers, rigType, extraBones } = useStore.getState();
+  if (!normalized || !joints) throw new Error('No joints yet.');
+  const { positions, index } = arrays(normalized.geometry);
+  const quad = rigType === 'quadruped';
+  const creature = rigType === 'creature';
+  const defs = skeletonDefs();
+  const hasExtras = extraBones.length > 0;
+  const rigJoints = creature || hasExtras ? { joints: joints.joints, tails: autoTails(defs, joints.joints, joints.tails) } : joints;
+  const kind: SkeletonKind = creature || hasExtras ? [...defs] : quad ? 'quadruped' : fingers ? 'humanoid' : 'humanoid-nofingers';
+  return { positions, index, defs, rigJoints, kind, quad, creature };
 }
 
 /** Swaps in a new mesh for the same model (remesh): everything downstream starts over. */
