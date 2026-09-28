@@ -1,0 +1,37 @@
+{
+  "name": "@rigforge/r3f",
+  "version": "0.1.0",
+  "description": "React Three Fiber components for RigForge characters.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.tsx"
+  },
+  "files": ["dist"],
+  "publishConfig": {
+    "exports": {
+      ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.tsx --format esm --dts --clean --external three --external react --external @react-three/fiber --external @rigforge/three",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@react-three/fiber": ">=9.0.0",
+    "react": ">=19.0.0",
+    "three": ">=0.160.0"
+  },
+  "dependencies": {
+    "@rigforge/three": "workspace:*"
+  },
+  "devDependencies": {
+    "@react-three/fiber": "^9.8.1",
+    "@types/react": "^19.3.0",
+    "@types/three": "^0.186.0",
+    "react": "^19.3.0",
+    "three": "^0.186.1",
+    "tsup": "^8.5.1"
+  }
+}

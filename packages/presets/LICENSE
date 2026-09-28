@@ -1,0 +1,15 @@
+RigForge preset animations
+==========================
+
+The motion data in clips.json was derived from the CMU Graphics Lab Motion
+Capture Database (http://mocap.cs.cmu.edu), using the BVH conversion by
+Bruce Hahne (cgspeed), and retargeted to the RigForge canonical humanoid.
+
+The data used in this project was obtained from mocap.cs.cmu.edu.
+The database was created with funding from NSF EIA-0196217.
+
+CMU places no restrictions on the use of the original dataset: it is free
+for research and commercial use (including in commercially sold products),
+but the motion data itself may not be resold, even in converted form.
+
+The build scripts in this package are MIT licensed (see the repository LICENSE).
