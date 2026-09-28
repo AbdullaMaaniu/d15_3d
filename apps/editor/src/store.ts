@@ -1,7 +1,15 @@
 import { create } from 'zustand';
-import { AnimationClip, BufferGeometry, Quaternion, Vector3, type Object3D } from 'three';
+import { AnimationClip, BufferGeometry, Quaternion, Vector3, type Object3D, type SkinnedMesh } from 'three';
 import {
   alignHeading,
+  applyBrush,
+  createPaintContext,
+  restoreWeights,
+  snapshotWeights,
+  type BrushMode,
+  type PaintContext,
+  makeSeamlessLoop,
+  sliceClip,
   analyzeMesh,
   applyNormalization,
   autoMapBones,
@@ -44,7 +52,17 @@ export interface ClipEntry {
   loop: boolean;
   inPlace: boolean;
   speed: number;
+  /** Trim in/out points in seconds of the source clip. */
+  trim?: [number, number];
   baked: AnimationClip;
+}
+
+export interface PaintSettings {
+  active: boolean;
+  mode: BrushMode;
+  radius: number;
+  strength: number;
+  mirror: boolean;
 }
 
 export const PRESETS: EncodedClip[] = (presetPack as { clips: EncodedClip[] }).clips;
@@ -96,6 +114,11 @@ interface State {
   showFingerMarkers: boolean;
   selectedBone: string | null;
 
+  paint: PaintSettings;
+  /** Bumped whenever skin weights change, so views refresh. */
+  weightsVersion: number;
+  paintUndo: number;
+
   exportName: string;
   exportPreset: 'web' | 'mobile' | 'lossless';
   exportResult: ExportResult | null;
@@ -122,19 +145,35 @@ interface Actions {
   setTestClip(presetId: string | null): void;
   addPreset(id: string): void;
   addImportedClips(files: File[]): Promise<void>;
-  updateClip(id: string, patch: Partial<Pick<ClipEntry, 'name' | 'loop' | 'inPlace' | 'speed'>>): void;
+  updateClip(id: string, patch: Partial<Pick<ClipEntry, 'name' | 'loop' | 'inPlace' | 'speed' | 'trim'>>): void;
   removeClip(id: string): void;
   mirror(id: string): void;
   play(id: string | null): void;
   setPlaying(p: boolean): void;
   setTime(t: number): void;
   set<K extends keyof State>(key: K, value: State[K]): void;
+  setPaint(patch: Partial<PaintSettings>): void;
+  beginStroke(): void;
+  dab(point: [number, number, number]): void;
+  undoPaint(): void;
+  pickBoneAt(point: [number, number, number]): void;
 }
 
 let clipCounter = 0;
 
+/** Applies the trim range; trimmed loops get their seam blended so they cycle cleanly. */
+function trimmed(entry: Omit<ClipEntry, 'baked'>): NormalizedClip {
+  const n = entry.normalized;
+  if (!entry.trim) return n;
+  const a = Math.max(0, Math.round(entry.trim[0] * n.fps));
+  const b = Math.min(n.frames - 1, Math.round(entry.trim[1] * n.fps));
+  if (b - a < 2) return n;
+  if (entry.loop && b + 1 < n.frames) return makeSeamlessLoop(sliceClip(n, a, b + 2));
+  return sliceClip(n, a, b + 1);
+}
+
 function bake(binding: SkeletonBinding, entry: Omit<ClipEntry, 'baked'>): AnimationClip {
-  const clip = bakeClip(binding, { ...entry.normalized, loop: entry.loop }, { inPlace: entry.inPlace, name: entry.name });
+  const clip = bakeClip(binding, { ...trimmed(entry), loop: entry.loop }, { inPlace: entry.inPlace, name: entry.name });
   clip.userData = { rigforge: { loop: entry.loop, inPlace: entry.inPlace, speed: entry.speed } };
   return clip;
 }
@@ -172,6 +211,9 @@ export const useStore = create<State & Actions>()((set, get) => ({
   showSkeleton: true,
   showFingerMarkers: false,
   selectedBone: null,
+  paint: { active: false, mode: 'add', radius: 0.06, strength: 0.35, mirror: true },
+  weightsVersion: 0,
+  paintUndo: 0,
   exportName: 'character',
   exportPreset: 'web',
   exportResult: null,
@@ -181,7 +223,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
 
   goto(step) {
     const i = STEPS.indexOf(step);
-    if (i <= get().unlocked) set({ step });
+    if (i <= get().unlocked) set({ step, paint: { ...get().paint, active: false } });
   },
 
   async loadFromFiles(files) {
@@ -338,7 +380,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   },
 
   editJoints() {
-    set({ character: null, binding: null, testClip: null, playing: false });
+    set({ character: null, binding: null, testClip: null, playing: false, paint: { ...get().paint, active: false } });
   },
 
   setTestClip(presetId) {
@@ -400,7 +442,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
       clips: get().clips.map((c) => {
         if (c.id !== id) return c;
         const next = { ...c, ...patch };
-        const needsBake = patch.inPlace !== undefined || patch.loop !== undefined || patch.name !== undefined;
+        const needsBake = patch.inPlace !== undefined || patch.loop !== undefined || patch.name !== undefined || 'trim' in patch;
         return needsBake ? { ...next, baked: bake(binding, next) } : next;
       }),
     });
@@ -419,12 +461,91 @@ export const useStore = create<State & Actions>()((set, get) => ({
     set({ clips: [...get().clips, { ...entry, baked: bake(binding, entry) }], activeClip: entry.id });
   },
 
+  setPaint(patch) {
+    const paint = { ...get().paint, ...patch };
+    if (patch.active) {
+      // Paint in the bind pose so the brush lines up with the mesh.
+      set({ playing: false, testClip: null, shading: 'weights', selectedBone: get().selectedBone ?? 'spine' });
+      const root = get().character?.root;
+      root?.traverse((o: any) => o.isSkinnedMesh && o.skeleton.pose());
+    }
+    set({ paint });
+  },
+
+  beginStroke() {
+    const ctx = paintContext();
+    if (!ctx) return;
+    undoStack.push(snapshotWeights(ctx.ctx));
+    if (undoStack.length > 30) undoStack.shift();
+    set({ paintUndo: undoStack.length });
+  },
+
+  dab(point) {
+    const pc = paintContext();
+    const bone = get().selectedBone;
+    if (!pc || !bone) return;
+    const { mode, radius, strength, mirror } = get().paint;
+    const names = pc.mesh.skeleton.bones.map((b) => b.name);
+    const bi = names.indexOf(bone);
+    if (bi < 0) return;
+    applyBrush(pc.ctx, { center: point, radius, strength, mode, bone: bi });
+    if (mirror) {
+      const cx = get().detection?.measurements.centerX ?? 0;
+      const mb = names.indexOf(mirrorBoneName(bone));
+      const mp: [number, number, number] = [2 * cx - point[0], point[1], point[2]];
+      if (mb >= 0 && Math.abs(mp[0] - point[0]) > radius * 0.5) applyBrush(pc.ctx, { center: mp, radius, strength, mode, bone: mb });
+    }
+    pc.mesh.geometry.attributes.skinIndex.needsUpdate = true;
+    pc.mesh.geometry.attributes.skinWeight.needsUpdate = true;
+    set({ weightsVersion: get().weightsVersion + 1 });
+  },
+
+  undoPaint() {
+    const pc = paintContext();
+    const snap = undoStack.pop();
+    if (!pc || !snap) return;
+    restoreWeights(pc.ctx, snap);
+    pc.mesh.geometry.attributes.skinIndex.needsUpdate = true;
+    pc.mesh.geometry.attributes.skinWeight.needsUpdate = true;
+    set({ weightsVersion: get().weightsVersion + 1, paintUndo: undoStack.length });
+  },
+
+  pickBoneAt(point) {
+    const pc = paintContext();
+    if (!pc) return;
+    const pos = pc.mesh.geometry.attributes.position;
+    let best = -1, bestD = Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      const d = (pos.getX(i) - point[0]) ** 2 + (pos.getY(i) - point[1]) ** 2 + (pos.getZ(i) - point[2]) ** 2;
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    if (best < 0) return;
+    const si = pc.mesh.geometry.attributes.skinIndex, sw = pc.mesh.geometry.attributes.skinWeight;
+    let k = 0;
+    for (let j = 1; j < 4; j++) if (sw.getComponent(best, j) > sw.getComponent(best, k)) k = j;
+    set({ selectedBone: pc.mesh.skeleton.bones[si.getComponent(best, k)].name });
+  },
+
   play(id) {
     set({ activeClip: id, playing: id !== null, testClip: null });
   },
   setPlaying: (playing) => set({ playing }),
   setTime: (time) => set({ time }),
 }));
+
+// Weight painting context for the current character (rebuilt when the character changes).
+let paintCache: { mesh: SkinnedMesh; ctx: PaintContext } | null = null;
+const undoStack: Array<ReturnType<typeof snapshotWeights>> = [];
+
+function paintContext(): { mesh: SkinnedMesh; ctx: PaintContext } | null {
+  const built = useStore.getState().character?.built;
+  if (!built) return null;
+  if (paintCache?.mesh !== built.mesh) {
+    paintCache = { mesh: built.mesh, ctx: createPaintContext(built.mesh.geometry, built.skeleton.bones.length) };
+    undoStack.length = 0;
+  }
+  return paintCache;
+}
 
 function arrays(geometry: BufferGeometry) {
   const positions = new Float32Array(geometry.attributes.position.array as ArrayLike<number>);

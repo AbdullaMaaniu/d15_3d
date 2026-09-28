@@ -5,6 +5,33 @@ import { Check, FilePicker, Section } from '../components/ui';
 const CATEGORY_ORDER = ['idle', 'locomotion', 'action', 'combat', 'emote'];
 const ESSENTIALS = ['idle', 'walk', 'run', 'jump'];
 
+function TrimRow({ id }: { id: string }) {
+  const c = useStore((s) => s.clips.find((x) => x.id === id))!;
+  const active = useStore((s) => s.activeClip === id);
+  const time = useStore((s) => s.time);
+  const updateClip = useStore((s) => s.updateClip);
+  const full = (c.normalized.frames - 1) / c.normalized.fps;
+  const [a, b] = c.trim ?? [0, full];
+  const set = (na: number, nb: number) => {
+    na = Math.max(0, Math.min(na, full));
+    nb = Math.max(0, Math.min(nb, full));
+    if (nb - na < 0.1) return;
+    updateClip(id, { trim: na <= 1e-3 && nb >= full - 1e-3 ? undefined : [na, nb] });
+  };
+  const playhead = a + (active ? time : 0);
+  return (
+    <div className="row" style={{ gap: 6 }}>
+      <span className="src" style={{ width: 30 }}>Trim</span>
+      <input className="text" type="number" step={0.05} min={0} max={full} value={+a.toFixed(2)} style={{ width: 62 }} aria-label="Trim start" onChange={(e) => set(parseFloat(e.target.value) || 0, b)} />
+      <span className="src">→</span>
+      <input className="text" type="number" step={0.05} min={0} max={full} value={+b.toFixed(2)} style={{ width: 62 }} aria-label="Trim end" onChange={(e) => set(a, parseFloat(e.target.value) || full)} />
+      <button className="btn small ghost" disabled={!active} title="Start at playhead" onClick={() => set(playhead, b)}>[</button>
+      <button className="btn small ghost" disabled={!active} title="End at playhead" onClick={() => set(a, playhead)}>]</button>
+      {c.trim && <button className="btn small ghost" title="Reset trim" onClick={() => updateClip(id, { trim: undefined })}>↺</button>}
+    </div>
+  );
+}
+
 export function AnimatePanel() {
   const clips = useStore((s) => s.clips);
   const activeClip = useStore((s) => s.activeClip);
@@ -55,7 +82,8 @@ export function AnimatePanel() {
                 <input className="text" type="number" min={0.1} max={4} step={0.1} value={c.speed} style={{ width: 56 }} onChange={(e) => updateClip(c.id, { speed: Math.max(0.1, parseFloat(e.target.value) || 1) })} />
               </label>
             </div>
-            <div className="src">{c.source} · {(c.normalized.frames / c.normalized.fps).toFixed(1)} s</div>
+            <TrimRow id={c.id} />
+            <div className="src">{c.source} · {((c.normalized.frames - 1) / c.normalized.fps).toFixed(1)} s source</div>
           </div>
         ))}
         <FilePicker className="btn" accept=".fbx,.bvh,.glb,.gltf" multiple onFiles={(f) => void addImported(f)}>

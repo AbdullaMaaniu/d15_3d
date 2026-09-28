@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { humanoidDefs } from '@rigforge/core';
 import { PRESETS, useStore } from '../store';
 import { Check, Notes, Section, Seg } from '../components/ui';
@@ -35,13 +36,14 @@ export function RigPanel() {
           <p>Check how the mesh deforms. Switch to the weights view to inspect each bone's influence.</p>
         </div>
         <Section title="Pose test">
-          <select className="text" value={testId} onChange={(e) => setTestClip(e.target.value || null)}>
+          <select className="text" value={testId} onChange={(e) => { useStore.getState().setPaint({ active: false }); setTestClip(e.target.value || null); }}>
             <option value="">Bind pose</option>
             {PRESETS.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
         </Section>
+        <PaintSection />
         <Section title="Inspect weights">
           <select
             className="text"
@@ -117,6 +119,61 @@ export function RigPanel() {
         Build rig
       </button>
     </>
+  );
+}
+
+function PaintSection() {
+  const paint = useStore((s) => s.paint);
+  const setPaint = useStore((s) => s.setPaint);
+  const undo = useStore((s) => s.undoPaint);
+  const canUndo = useStore((s) => s.paintUndo > 0);
+  const selectedBone = useStore((s) => s.selectedBone);
+
+  useEffect(() => {
+    if (!paint.active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        undo();
+      } else if (e.key === '[') setPaint({ radius: Math.max(0.01, paint.radius / 1.2) });
+      else if (e.key === ']') setPaint({ radius: Math.min(0.5, paint.radius * 1.2) });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [paint.active, paint.radius, setPaint, undo]);
+
+  return (
+    <Section
+      title="Paint weights"
+      right={
+        <button className={`btn small${paint.active ? ' active' : ''}`} onClick={() => setPaint({ active: !paint.active })}>
+          {paint.active ? 'Done' : 'Start painting'}
+        </button>
+      }
+    >
+      {!paint.active && <p>Fix spots that deform badly: paint a bone's influence directly on the mesh.</p>}
+      {paint.active && (
+        <>
+          <p className="footer-note">
+            Painting <strong style={{ color: 'var(--text)' }}>{selectedBone ?? 'no bone'}</strong>. Drag on the mesh to paint; Alt-click or right-click picks the bone under the cursor. <span className="kbd">[</span> <span className="kbd">]</span> size, <span className="kbd">Ctrl Z</span> undo.
+          </p>
+          <Seg value={paint.mode} onChange={(mode) => setPaint({ mode })} options={[['add', 'Add'], ['subtract', 'Subtract'], ['smooth', 'Smooth']]} />
+          <div className="field">
+            Radius: {(paint.radius * 100).toFixed(0)} cm
+            <input type="range" min={0.01} max={0.3} step={0.005} value={paint.radius} onChange={(e) => setPaint({ radius: +e.target.value })} />
+          </div>
+          <div className="field">
+            Strength: {Math.round(paint.strength * 100)}%
+            <input type="range" min={0.02} max={1} step={0.02} value={paint.strength} onChange={(e) => setPaint({ strength: +e.target.value })} />
+          </div>
+          <div className="row between">
+            <Check checked={paint.mirror} onChange={(mirror) => setPaint({ mirror })}>Mirror to other side</Check>
+            <button className="btn small" disabled={!canUndo} onClick={undo}>Undo</button>
+          </div>
+        </>
+      )}
+    </Section>
   );
 }
 
