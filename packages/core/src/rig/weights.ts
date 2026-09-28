@@ -14,6 +14,8 @@ export interface WeightOptions {
   smoothIterations?: number;
   /** Max influences per vertex (glTF default 4). */
   maxInfluences?: number;
+  /** Give each shoulder a clean seam between arm and body (default true). */
+  splitShoulders?: boolean;
   onProgress?: (stage: string, fraction: number) => void;
 }
 
@@ -209,7 +211,7 @@ function prepareSkinWeights(
     }
 
     // After smoothing, which would blur the seam back out; its own blend band keeps it smooth.
-    splitShoulders(dense, pts, defs, map);
+    if (options.splitShoulders !== false) splitShoulders(dense, pts, defs, map);
 
     // Top-N influences per welded vertex (partial selection; ties keep the lower bone
     // index, like a stable sort), then expand to all vertices.
@@ -337,27 +339,40 @@ export function splitShoulders(dense: Float32Array, pts: Float32Array, defs: rea
     for (let w = 0; w < count; w++) {
       const dx = pts[w * 3] - P[0], dy = pts[w * 3 + 1] - P[1], dz = pts[w * 3 + 2] - P[2];
       const along = dx * a[0] + dy * a[1] + dz * a[2];
-      if (along > len || along < -reach) continue;
       const radial = Math.hypot(dx - along * a[0], dy - along * a[1], dz - along * a[2]);
-      if (radial > reach) continue;
+      // Every step is a smooth function of position and weight: a hard switch between
+      // neighbouring vertices would tear the surface open once the arm moves.
+      const region = fade(radial, 0.6 * reach, reach) * fade(along, 0.8 * len, len) * fade(-along, 0.6 * reach, reach);
+      if (region === 0) continue;
       const row = w * B;
       let armW = 0;
       for (let b = 0; b < B; b++) if (arm[b]) armW += dense[row + b];
-      const x = Math.max(0, Math.min(1, (along + band) / (2 * band)));
-      const t = x * x * (3 - 2 * x); // 0 on the body side, 1 on the arm side
-      if (armW >= 0.2 && armW < 1) {
-        // Hand the body's share to the upper arm.
-        const move = t * (1 - armW);
+      const t = smooth((along + band) / (2 * band)); // 0 on the body side, 1 on the arm side
+      // Only what already leans on the arm (a sleeve) is handed to it; torso stays out.
+      const lean = smooth((armW - 0.1) / 0.3);
+      if (armW < 1 && lean > 0) {
+        const move = region * lean * t * (1 - armW);
         const keep = 1 - move / (1 - armW);
         for (let b = 0; b < B; b++) if (!arm[b]) dense[row + b] *= keep;
         dense[row + ua] += move;
       }
       if (t < 1) {
         // Body side of the cut: the torso stays with the body.
-        const move = (1 - t) * dense[row + ua];
+        const move = region * (1 - t) * dense[row + ua];
         dense[row + ua] -= move;
         dense[row + collar] += move;
       }
     }
   }
+}
+
+/** 0 below 0, 1 above 1, smooth in between. */
+function smooth(x: number): number {
+  const c = Math.max(0, Math.min(1, x));
+  return c * c * (3 - 2 * c);
+}
+
+/** 1 up to `a`, 0 from `b`, smooth in between. */
+function fade(x: number, a: number, b: number): number {
+  return 1 - smooth((x - a) / (b - a));
 }
