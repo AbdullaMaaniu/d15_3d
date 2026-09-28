@@ -11,6 +11,7 @@ import {
 } from 'three';
 import { HUMANOID_WITH_FINGERS, canonicalParent, tposeDirection } from '../skeleton';
 import type { BoneMap } from './bonemap';
+import { measureArmClearance, type ArmClearance } from './armClearance';
 
 /**
  * Skeleton-independent humanoid animation.
@@ -42,7 +43,36 @@ export interface SkeletonBinding {
   hipsHeight: number;
   /** Local transforms of every node at bind time; sampling always starts from these. */
   restPose: Array<[Object3D, Vector3, Quaternion, Vector3]>;
+  /**
+   * A relaxed, gently curled hand (normalized local rotations per finger bone), used
+   * for fingers a clip doesn't animate, so hands don't hang stiff and splayed.
+   */
+  relaxedFingers: Map<string, Quaternion>;
+  /** Clearance measured from the mesh (radians from straight down, per side). */
+  autoArmClearance: ArmClearance;
+  /**
+   * Hanging arms are swung out to at least this angle so they stay outside the body.
+   * Starts as autoArmClearance; see setArmSpacing.
+   */
+  armClearance: ArmClearance;
 }
+
+/** Adjusts the arm clearance by `degrees` on top of the measured value (negative brings arms in). */
+export function setArmSpacing(binding: SkeletonBinding, degrees: number): void {
+  const d = (degrees * Math.PI) / 180;
+  binding.armClearance = {
+    left: Math.max(0, binding.autoArmClearance.left + d),
+    right: Math.max(0, binding.autoArmClearance.right + d),
+  };
+}
+
+// Curl per segment (proximal, intermediate, distal), in degrees: more toward the little finger.
+const RELAXED_CURL: Record<string, [number, number, number]> = {
+  Index: [12, 18, 12],
+  Middle: [16, 22, 14],
+  Ring: [20, 26, 16],
+  Little: [24, 30, 18],
+};
 
 const ORDER = HUMANOID_WITH_FINGERS.map((d) => d.name);
 
@@ -83,6 +113,29 @@ export function bindSkeleton(root: Object3D, map: BoneMap): SkeletonBinding {
     tpose.set(canon, corr.clone().multiply(bind));
   }
 
+  // Relaxed fingers curl toward the palm. The palm side follows from the knuckle line
+  // (index -> little) and handedness, so it works whichever way the palms face.
+  const relaxedFingers = new Map<string, Quaternion>();
+  for (const side of ['left', 'right'] as const) {
+    const hand = node(`${side}Hand`), index = node(`${side}IndexProximal`), little = node(`${side}LittleProximal`);
+    const handCorr = correction.get(`${side}Hand`);
+    if (!hand || !index || !little || !handCorr) continue;
+    const a = new Vector3(side === 'left' ? 1 : -1, 0, 0);
+    const knuckles = wp(little).sub(wp(index)).applyQuaternion(handCorr);
+    knuckles.addScaledVector(a, -knuckles.dot(a));
+    if (knuckles.lengthSq() < 1e-12) continue;
+    knuckles.normalize();
+    // Left hand: palm = -(finger x knuckle line); right hand: +(finger x knuckle line).
+    const palm = new Vector3().crossVectors(a, knuckles).multiplyScalar(side === 'left' ? -1 : 1);
+    const axis = new Vector3().crossVectors(a, palm).normalize();
+    for (const [finger, angles] of Object.entries(RELAXED_CURL)) {
+      ['Proximal', 'Intermediate', 'Distal'].forEach((segment, k) => {
+        const canon = `${side}${finger}${segment}`;
+        if (node(canon)) relaxedFingers.set(canon, new Quaternion().setFromAxisAngle(axis, (angles[k] * Math.PI) / 180));
+      });
+    }
+  }
+
   const hipsNode = node('hips');
   if (!hipsNode) throw new Error('Skeleton has no hips bone mapped.');
   const restHipsWorld = wp(hipsNode);
@@ -93,7 +146,8 @@ export function bindSkeleton(root: Object3D, map: BoneMap): SkeletonBinding {
   }
   if (!Number.isFinite(ground)) ground = 0;
   const hipsHeight = Math.max(1e-6, restHipsWorld.y - ground);
-  return { root, map, tpose, restHipsWorld, hipsHeight, restPose };
+  const autoArmClearance = measureArmClearance(root, map);
+  return { root, map, tpose, restHipsWorld, hipsHeight, restPose, relaxedFingers, autoArmClearance, armClearance: { ...autoArmClearance } };
 }
 
 /** Samples any three.js animation on a mapped skeleton into a NormalizedClip. */
@@ -180,6 +234,36 @@ export interface BakeOptions {
   /** Playback speed multiplier baked into the clip timing. */
   speed?: number;
   name?: string;
+  /** Keep hanging arms outside the body (binding.armClearance). Default true. */
+  clearBody?: boolean;
+}
+
+const _up = new Vector3();
+const _lat = new Vector3();
+const _dir = new Vector3();
+const _axis = new Vector3();
+const _swing = new Quaternion();
+
+/**
+ * Swings a hanging upper arm (normalized world rotation `w`, updated in place) out
+ * sideways until it keeps the binding's clearance from the body. Arms that are
+ * already out, or raised, are left alone; the push fades in as the arm points down.
+ */
+function clearBody(binding: SkeletonBinding, worldN: Map<string, Quaternion>, side: 'left' | 'right', w: Quaternion): void {
+  const need = binding.armClearance[side];
+  if (!(need > 0)) return;
+  const s = side === 'left' ? 1 : -1;
+  const chest = worldN.get(canonicalParent(`${side}Shoulder`)!)!;
+  _up.set(0, 1, 0).applyQuaternion(chest);
+  _lat.set(s, 0, 0).applyQuaternion(chest);
+  _dir.set(s, 0, 0).applyQuaternion(w);
+  const down = -_dir.dot(_up);
+  if (down <= 0) return;
+  const delta = need - Math.atan2(_dir.dot(_lat), down);
+  if (delta <= 0) return;
+  const t = Math.min(1, down / 0.5);
+  _axis.crossVectors(_lat, _up).normalize();
+  w.premultiply(_swing.setFromAxisAngle(_axis, delta * t * t * (3 - 2 * t)));
 }
 
 /**
@@ -189,6 +273,7 @@ export interface BakeOptions {
 export function bakeClip(binding: SkeletonBinding, clip: NormalizedClip, options: BakeOptions = {}): AnimationClip {
   const speed = options.speed ?? 1;
   const inPlace = options.inPlace ?? clip.loop;
+  const clear = options.clearBody ?? true;
   const { root, map } = binding;
   const index = new Map(clip.bones.map((b, i) => [b, i]));
   const targets = ORDER.filter((c) => map[c] && binding.tpose.has(c));
@@ -229,10 +314,13 @@ export function bakeClip(binding: SkeletonBinding, clip: NormalizedClip, options
     worldN.clear();
     for (const canon of ORDER) {
       const i = index.get(canon);
-      const local = i !== undefined ? q.fromArray(clip.rotations, (f * clip.bones.length + i) * 4).clone() : new Quaternion();
+      // Fingers the clip doesn't animate take the relaxed hand pose.
+      const local = i !== undefined ? q.fromArray(clip.rotations, (f * clip.bones.length + i) * 4).clone() : binding.relaxedFingers.get(canon)?.clone() ?? new Quaternion();
       const parent = canonicalParent(canon);
       const pw = parent ? worldN.get(parent)! : new Quaternion();
-      worldN.set(canon, pw.clone().multiply(local));
+      const w = pw.clone().multiply(local);
+      worldN.set(canon, w);
+      if (clear && (canon === 'leftUpperArm' || canon === 'rightUpperArm')) clearBody(binding, worldN, canon === 'leftUpperArm' ? 'left' : 'right', w);
     }
     // Walk the target hierarchy computing world rotations and local results.
     worldT.clear();

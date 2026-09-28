@@ -46,6 +46,7 @@ import {
   autoMapBones,
   bakeClip,
   bindSkeleton,
+  setArmSpacing,
   buildSkinnedCharacter,
   computeNormalization,
   decodeClip,
@@ -176,6 +177,8 @@ interface State {
 
   character: CharacterState | null;
   binding: SkeletonBinding | null;
+  /** Degrees added to the measured arm clearance (keeps hanging arms outside the body). */
+  armSpacing: number;
   testClip: AnimationClip | null;
 
   clips: ClipEntry[];
@@ -231,6 +234,7 @@ interface Actions {
   moveJoint(name: string, p: [number, number, number], isTail?: boolean): void;
   symmetrize(from: 'left' | 'right'): void;
   setWeightSettings(s: Partial<WeightSettings>): void;
+  setArmSpacing(degrees: number): void;
   buildRig(): Promise<void>;
   useExistingRig(): void;
   editJoints(): void;
@@ -314,7 +318,9 @@ function propTimeline(seconds: number, name: string): NormalizedClip {
 
 function bake(binding: SkeletonBinding, entry: Omit<ClipEntry, 'baked'>): AnimationClip {
   if (entry.propKeys) return bakeProp(entry);
-  const clip = bakeClip(binding, { ...applyKeyLayer(trimmed(entry), entry.keys), loop: entry.loop }, { inPlace: entry.inPlace, name: entry.name });
+  // Hand-keyed arms are posed exactly as the user set them.
+  const keyedArms = ['leftUpperArm', 'rightUpperArm'].some((b) => entry.keys?.bones[b]?.times.length);
+  const clip = bakeClip(binding, { ...applyKeyLayer(trimmed(entry), entry.keys), loop: entry.loop }, { inPlace: entry.inPlace, name: entry.name, clearBody: !keyedArms });
   clip.userData = { rigforge: { loop: entry.loop, inPlace: entry.inPlace, speed: entry.speed } };
   return clip;
 }
@@ -350,6 +356,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   propRig: null,
   character: null,
   binding: null,
+  armSpacing: 0,
   testClip: null,
   clips: [],
   activeClip: null,
@@ -449,6 +456,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
       joints: null,
       character: null,
       binding: null,
+      armSpacing: 0,
       clips: [],
       activeClip: null,
       exportResult: null,
@@ -529,6 +537,15 @@ export const useStore = create<State & Actions>()((set, get) => ({
   },
 
   setWeightSettings: (s) => set({ weightSettings: { ...get().weightSettings, ...s } }),
+  setArmSpacing(degrees) {
+    set({ armSpacing: degrees });
+    const binding = get().binding;
+    if (!binding) return;
+    setArmSpacing(binding, degrees);
+    rebakeAll();
+    const test = get().testClip?.name.startsWith('test:') && PRESETS.find((p) => `test:${p.name}` === get().testClip!.name);
+    if (test) get().setTestClip(test.id);
+  },
 
   async buildRig() {
     const { normalized, joints, fingers, weightSettings } = get();
@@ -545,6 +562,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
       const built = buildSkinnedCharacter(normalized.geometry, normalized.materials, defs, rigJoints, w.skinIndex, w.skinWeight, quad ? 'Animal' : creature ? 'Creature' : 'Character');
       // Humanoids retarget through a canonical binding; other skeletons use direct bone keys.
       const binding = quad || creature ? null : bindSkeleton(built.root, autoMapBones(built.root).map);
+      if (binding) setArmSpacing(binding, get().armSpacing);
       if (creature) set({ joints: rigJoints });
       set({ springs: defaultSprings(get().rigType, get().extraBones, normalized.geometry, rigJoints.joints) });
       const kernel = w.kernel;
@@ -575,6 +593,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
       return;
     }
     const binding = bindSkeleton(file.scene, map);
+    setArmSpacing(binding, get().armSpacing);
     set({ character: { root: file.scene, built: null }, binding, unlocked: 4, step: 'animate', joints: null, detection: null });
     // Keep the file's own clips.
     const entries: ClipEntry[] = [];

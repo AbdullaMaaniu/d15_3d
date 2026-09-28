@@ -1,6 +1,6 @@
 import { PRESETS, useStore } from '../store';
 import { humanoidDefs, keyCount, quadrupedGaits, type PropMotion } from '@rigforge/core';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, FilePicker, Section, Seg } from '../components/ui';
 
 const CATEGORY_ORDER = ['idle', 'locomotion', 'action', 'combat', 'emote'];
@@ -164,6 +164,39 @@ function TrimRow({ id }: { id: string }) {
   );
 }
 
+const deg = (r: number) => Math.round((r * 180) / Math.PI);
+
+/** Keeps hanging arms outside a bulky body: measured on the mesh, adjustable. */
+function BodyFitSection() {
+  const binding = useStore((s) => s.binding);
+  const spacing = useStore((s) => s.armSpacing);
+  const setSpacing = useStore((s) => s.setArmSpacing);
+  const [value, setValue] = useState(spacing);
+  useEffect(() => setValue(spacing), [spacing]);
+  // Rebaking every clip is too slow for every slider tick.
+  useEffect(() => {
+    if (value === spacing) return;
+    const t = setTimeout(() => setSpacing(value), 120);
+    return () => clearTimeout(t);
+  }, [value, spacing, setSpacing]);
+  if (!binding) return null;
+  const auto = Math.max(binding.autoArmClearance.left, binding.autoArmClearance.right);
+  const total = Math.max(0, deg(auto) + value);
+  return (
+    <Section title="Body fit">
+      <div className="field">
+        Arm spacing: {value > 0 ? '+' : ''}{value}° · arms hang at least {total}° out
+        <input type="range" min={-20} max={30} step={1} value={value} aria-label="Arm spacing" onChange={(e) => setValue(+e.target.value)} />
+      </div>
+      <p className="footer-note">
+        {auto > 0
+          ? `Measured from your model: hanging arms need ${deg(auto)}° to clear the body. Raise it if arms still sink into clothing.`
+          : 'Raise it if hanging arms sink into the body or clothing.'}
+      </p>
+    </Section>
+  );
+}
+
 export function AnimatePanel() {
   const clips = useStore((s) => s.clips);
   const activeClip = useStore((s) => s.activeClip);
@@ -253,6 +286,7 @@ export function AnimatePanel() {
         {!direct && <p className="footer-note">Import Mixamo FBX, BVH or GLB animations; they're retargeted automatically.</p>}
       </Section>
 
+      {!direct && <BodyFitSection />}
       {isQuad && <GaitSection />}
       {direct && <PropMotionSection />}
       {!direct && (

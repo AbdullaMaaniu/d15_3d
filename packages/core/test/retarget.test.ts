@@ -8,7 +8,8 @@ import { computeSkinWeights } from '../src/rig/weights';
 import { buildSkinnedCharacter } from '../src/rig/build';
 import { humanoidDefs } from '../src/skeleton';
 import { autoMapBones } from '../src/anim/bonemap';
-import { bakeClip, bindSkeleton, extractNormalizedClip } from '../src/anim/retarget';
+import { bakeClip, bindSkeleton, extractNormalizedClip, setArmSpacing } from '../src/anim/retarget';
+import { armClearance } from '../src/anim/armClearance';
 import { decodeClip, type PresetPack } from '../src/anim/codec';
 import { createWasmKernels } from '../src/kernels';
 
@@ -42,7 +43,7 @@ describe('retargeting', () => {
     expect(upperArmT.angleTo(new Quaternion())).toBeGreaterThan(0.5);
 
     const walk = decodeClip(pack.clips.find((x) => x.id === 'walk')!);
-    const baked = bakeClip(binding, walk, { inPlace: false });
+    const baked = bakeClip(binding, walk, { inPlace: false, clearBody: false });
     const back = extractNormalizedClip(binding, baked, { fps: walk.fps });
     const B = walk.bones.length;
     let maxErr = 0;
@@ -59,6 +60,86 @@ describe('retargeting', () => {
     expect(maxErr).toBeLessThan(0.02);
     // Ground is re-estimated from the feet, so allow a small vertical offset.
     expect(hipsErr).toBeLessThan(0.08);
+  });
+
+  it('relaxes fingers the clip does not animate, curling toward the palm', async () => {
+    const c = await rig('T');
+    const binding = bindSkeleton(c.root, autoMapBones(c.root).map);
+    expect(binding.relaxedFingers.size).toBe(24);
+    // A one-frame T-pose clip without fingers, and the same with straight fingers.
+    const bones = ['hips'];
+    const tpose = { name: 'T', fps: 30, frames: 1, bones, rotations: new Float32Array([0, 0, 0, 1]), hips: new Float32Array([0, 1, 0]), loop: false };
+    const fingerBones = [...binding.relaxedFingers.keys()];
+    const straight = { ...tpose, bones: [...bones, ...fingerBones], rotations: new Float32Array((1 + fingerBones.length) * 4).map((_, i) => (i % 4 === 3 ? 1 : 0)) };
+    const tipAfter = (clip: typeof tpose) => {
+      const mixer = new AnimationMixer(c.root);
+      mixer.clipAction(bakeClip(binding, clip, { inPlace: true })).play();
+      mixer.update(0);
+      c.root.updateMatrixWorld(true);
+      const out: Record<string, Vector3> = {};
+      for (const side of ['left', 'right']) out[side] = c.bones[`${side}MiddleDistal`].getWorldPosition(new Vector3());
+      mixer.stopAllAction();
+      return out;
+    };
+    const relaxed = tipAfter(tpose);
+    const flat = tipAfter(straight);
+    for (const side of ['left', 'right']) {
+      // Palms face down in the mannequin's T-pose: curled tips drop and pull in toward the wrist.
+      expect(relaxed[side].y).toBeLessThan(flat[side].y - 0.005);
+      expect(Math.abs(relaxed[side].x)).toBeLessThan(Math.abs(flat[side].x));
+    }
+    // Mirror images of each other (within the detected joints' own asymmetry).
+    expect(Math.abs(relaxed.left.x + relaxed.right.x)).toBeLessThan(0.02);
+    expect(Math.abs(relaxed.left.y - relaxed.right.y)).toBeLessThan(0.02);
+  });
+
+  it('keeps hanging arms outside the body, more so on a bulky one', async () => {
+    const c = await rig('A');
+    const binding = bindSkeleton(c.root, autoMapBones(c.root).map);
+    const slim = binding.autoArmClearance;
+    expect(slim.left).toBeGreaterThan(0);
+    expect(Math.abs(slim.left - slim.right)).toBeLessThan(0.05);
+
+    // Widen the torso (a padded jacket): the arms need to swing further out.
+    const geo = c.mesh.geometry;
+    const pos = Float32Array.from(geo.attributes.position.array as Float32Array);
+    const si = geo.attributes.skinIndex.array as Uint16Array, sw = geo.attributes.skinWeight.array as Float32Array;
+    const names = c.mesh.skeleton.bones.map((b) => b.name);
+    const torso = new Set(['hips', 'spine', 'chest', 'upperChest']);
+    for (let v = 0; v < pos.length / 3; v++) {
+      let best = 0;
+      for (let k = 1; k < 4; k++) if (sw[v * 4 + k] > sw[v * 4 + best]) best = k;
+      if (torso.has(names[si[v * 4 + best]])) pos[v * 3] *= 1.35;
+    }
+    const joint = (n: string) => c.bones[n]?.getWorldPosition(new Vector3()).toArray();
+    const bulky = armClearance(pos, si, sw, names, joint);
+    expect(bulky.left).toBeGreaterThan(slim.left + 0.05);
+
+    // Baked hanging arms keep at least the clearance; without it the idle clip goes closer.
+    setArmSpacing(binding, 25 - (binding.autoArmClearance.left * 180) / Math.PI);
+    const need = binding.armClearance.left;
+    const idle = decodeClip(pack.clips.find((p) => p.id === 'idle')!);
+    const chest = c.bones.upperChest ?? c.bones.chest;
+    const minAngle = (clearBody: boolean) => {
+      const mixer = new AnimationMixer(c.root);
+      const clip = bakeClip(binding, idle, { inPlace: true, clearBody });
+      mixer.clipAction(clip).play();
+      let min = Infinity;
+      for (let t = 0; t < clip.duration; t += 0.1) {
+        mixer.setTime(t);
+        c.root.updateMatrixWorld(true);
+        for (const [side, s] of [['left', 1], ['right', -1]] as const) {
+          // Measured in the chest's frame: the clearance is from the body, which sways with it.
+          const d = c.bones[`${side}LowerArm`].getWorldPosition(new Vector3()).sub(c.bones[`${side}UpperArm`].getWorldPosition(new Vector3()));
+          d.applyQuaternion(chest.getWorldQuaternion(new Quaternion()).invert());
+          min = Math.min(min, Math.atan2(s * d.x, -d.y));
+        }
+      }
+      mixer.stopAllAction();
+      return min;
+    };
+    expect(minAngle(false)).toBeLessThan(need - 0.05);
+    expect(minAngle(true)).toBeGreaterThan(need - 0.03);
   });
 
   it('animates the skinned character', async () => {
