@@ -6,12 +6,20 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./wasm/rigforge_kernels.wasm": "./wasm/rigforge_kernels.wasm"
   },
-  "files": ["dist", "wasm"],
+  "files": [
+    "dist",
+    "wasm"
+  ],
   "publishConfig": {
     "exports": {
-      ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./wasm/rigforge_kernels.wasm": "./wasm/rigforge_kernels.wasm"
     }
   },
   "scripts": {

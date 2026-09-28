@@ -26,3 +26,6 @@ export {
 } from './anim/retarget';
 export { sliceClip, alignHeading, findLoop, makeSeamlessLoop, resampleClip, mirrorClip, poseDistance, clipDuration } from './anim/clipTools';
 export { encodeClip, decodeClip, type EncodedClip, type PresetPack } from './anim/codec';
+
+export { exportCharacter, toGLB, createIO, sizeBreakdown, type ExportOptions, type ExportPreset, type ExportResult, type SizeBreakdown } from './export/export';
+export { generateSnippet, type SnippetInput, type SnippetKind } from './export/snippets';

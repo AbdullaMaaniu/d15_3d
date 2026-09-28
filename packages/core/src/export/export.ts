@@ -1,0 +1,157 @@
+import type { AnimationClip, Object3D } from 'three';
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { Document, WebIO, type Texture } from '@gltf-transform/core';
+import { ALL_EXTENSIONS, EXTMeshoptCompression, EXTTextureWebP } from '@gltf-transform/extensions';
+import { dedup, inspect, prune, quantize, reorder, resample } from '@gltf-transform/functions';
+import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
+
+export type ExportPreset = 'web' | 'mobile' | 'lossless';
+
+export interface ExportOptions {
+  preset?: ExportPreset;
+  /** Longest texture edge in pixels (defaults: web 2048, mobile 1024, lossless: unchanged). */
+  maxTextureSize?: number;
+  /** Re-encode textures as WebP (default: web/mobile true). Requires OffscreenCanvas (browser). */
+  webp?: boolean;
+  /** Meshopt geometry + animation compression (default: web/mobile true). */
+  meshopt?: boolean;
+  /** Keyframe reduction (default true). */
+  resample?: boolean;
+  onProgress?: (stage: string) => void;
+}
+
+export interface SizeBreakdown {
+  total: number;
+  geometry: number;
+  textures: number;
+  animation: number;
+}
+
+export interface ExportResult {
+  glb: Uint8Array;
+  before: SizeBreakdown;
+  after: SizeBreakdown;
+  warnings: string[];
+}
+
+const PRESETS: Record<ExportPreset, Required<Pick<ExportOptions, 'webp' | 'meshopt' | 'resample'>> & { maxTextureSize: number }> = {
+  web: { webp: true, meshopt: true, resample: true, maxTextureSize: 2048 },
+  mobile: { webp: true, meshopt: true, resample: true, maxTextureSize: 1024 },
+  lossless: { webp: false, meshopt: false, resample: false, maxTextureSize: Infinity },
+};
+
+/** Serializes a three.js object and its clips to an unoptimized GLB. */
+export async function toGLB(root: Object3D, clips: AnimationClip[]): Promise<Uint8Array> {
+  const exporter = new GLTFExporter();
+  const result = await exporter.parseAsync(root, { binary: true, animations: clips, onlyVisible: false });
+  return new Uint8Array(result as ArrayBuffer);
+}
+
+export async function createIO(): Promise<WebIO> {
+  await MeshoptEncoder.ready;
+  await MeshoptDecoder.ready;
+  return new WebIO()
+    .registerExtensions(ALL_EXTENSIONS)
+    .registerDependencies({ 'meshopt.encoder': MeshoptEncoder, 'meshopt.decoder': MeshoptDecoder });
+}
+
+export function sizeBreakdown(doc: Document, total: number): SizeBreakdown {
+  const report = inspect(doc);
+  const sum = (items: Array<{ size?: number }>) => items.reduce((a, b) => a + (b.size ?? 0), 0);
+  return {
+    total,
+    geometry: sum(report.meshes.properties as any),
+    textures: sum(report.textures.properties as any),
+    animation: sum(report.animations.properties as any),
+  };
+}
+
+/**
+ * Exports a rigged character with its animation clips as an optimized GLB:
+ * dedup/prune, keyframe reduction, optional texture downscale + WebP and
+ * meshopt compression (decoded by three.js via MeshoptDecoder).
+ */
+export async function exportCharacter(root: Object3D, clips: AnimationClip[], options: ExportOptions = {}): Promise<ExportResult> {
+  const preset = PRESETS[options.preset ?? 'web'];
+  const webp = options.webp ?? preset.webp;
+  const meshopt = options.meshopt ?? preset.meshopt;
+  const doResample = options.resample ?? preset.resample;
+  const maxTex = options.maxTextureSize ?? preset.maxTextureSize;
+  const progress = options.onProgress ?? (() => {});
+  const warnings: string[] = [];
+
+  progress('Serializing glTF');
+  const raw = await toGLB(root, clips);
+  const io = await createIO();
+  const doc = await io.readBinary(raw);
+  const before = sizeBreakdown(doc, raw.byteLength);
+
+  // Carry clip settings (loop, in-place) as glTF extras so runtimes can pick them up.
+  const settings = new Map(clips.map((c) => [c.name, c.userData?.rigforge]));
+  for (const anim of doc.getRoot().listAnimations()) {
+    const s = settings.get(anim.getName());
+    if (s) anim.setExtras({ ...anim.getExtras(), rigforge: s });
+  }
+  doc.getRoot().getAsset().generator = 'RigForge';
+
+  progress('Optimizing');
+  await doc.transform(dedup(), prune({ keepAttributes: true }));
+  if (doResample) await doc.transform(resample({ tolerance: 1e-4 }));
+
+  if (webp || Number.isFinite(maxTex)) {
+    progress('Compressing textures');
+    const ok = await compressTextures(doc, { webp, maxSize: maxTex });
+    if (!ok) warnings.push('Texture compression needs OffscreenCanvas (a browser); textures were left unchanged.');
+  }
+
+  if (meshopt) {
+    progress('Compressing geometry and animation');
+    await doc.transform(reorder({ encoder: MeshoptEncoder }), quantize());
+    doc.createExtension(EXTMeshoptCompression).setRequired(true).setEncoderOptions({
+      method: EXTMeshoptCompression.EncoderMethod.FILTER,
+    });
+  }
+
+  progress('Writing GLB');
+  const glb = await io.writeBinary(doc);
+  const after = sizeBreakdown(doc, glb.byteLength);
+  return { glb, before, after, warnings };
+}
+
+async function compressTextures(doc: Document, opts: { webp: boolean; maxSize: number }): Promise<boolean> {
+  const textures = doc.getRoot().listTextures();
+  if (!textures.length) return true;
+  if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') return false;
+  let converted = false;
+  for (const tex of textures) {
+    const out = await reencode(tex, opts);
+    if (out) {
+      tex.setImage(out.bytes).setMimeType(out.mime);
+      if (out.mime === 'image/webp') {
+        tex.setURI(tex.getURI().replace(/\.(png|jpe?g)$/i, '.webp'));
+        converted = true;
+      }
+    }
+  }
+  if (converted) doc.createExtension(EXTTextureWebP).setRequired(true);
+  return true;
+}
+
+async function reencode(tex: Texture, opts: { webp: boolean; maxSize: number }): Promise<{ bytes: Uint8Array; mime: string } | null> {
+  const image = tex.getImage();
+  const mime = tex.getMimeType();
+  if (!image || !/image\/(png|jpeg|webp)/.test(mime)) return null;
+  const bitmap = await createImageBitmap(new Blob([image as BlobPart], { type: mime }));
+  const scale = Math.min(1, opts.maxSize / Math.max(bitmap.width, bitmap.height));
+  if (scale === 1 && !opts.webp) return null;
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  const type = opts.webp ? 'image/webp' : mime;
+  const blob = await canvas.convertToBlob({ type, quality: 0.9 });
+  // Some browsers silently fall back to PNG when WebP encoding is unsupported.
+  return { bytes: new Uint8Array(await blob.arrayBuffer()), mime: blob.type || type };
+}
