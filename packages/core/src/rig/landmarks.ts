@@ -351,6 +351,35 @@ export function detectHumanoid(positions: Float32Array, index: Uint32Array | nul
     for (const [n, f] of [['left', left.detection], ['right', right.detection]] as const) {
       if (f.method === 'template') notes.push(`Could not see separate fingers on the ${n} hand; finger bones were placed from hand proportions.`);
     }
+    // On a symmetric body the hands should agree. A hand whose knuckles make it point
+    // away from its forearm would be twisted at the wrist by every animation, so when
+    // one hand is clearly off and the other isn't, mirror the good one.
+    const armsSymmetric = ['UpperArm', 'LowerArm', 'Hand'].every((b) => {
+      const l = joints[`left${b}`], r = joints[`right${b}`];
+      return Math.hypot(l[0] - x0 + (r[0] - x0), l[1] - r[1], l[2] - r[2]) < 0.02 * H;
+    });
+    const deviation = (side: 'left' | 'right') => {
+      const fore = normalize(sub(joints[`${side}Hand`], joints[`${side}LowerArm`]));
+      const hand = normalize(sub(joints[`${side}MiddleProximal`], joints[`${side}Hand`]));
+      return (Math.acos(Math.max(-1, Math.min(1, fore[0] * hand[0] + fore[1] * hand[1] + fore[2] * hand[2]))) * 180) / Math.PI;
+    };
+    if (armsSymmetric && joints.leftMiddleProximal && joints.rightMiddleProximal) {
+      const dl = deviation('left'), dr = deviation('right');
+      if (Math.max(dl, dr) > 15 && Math.abs(dl - dr) > 10) {
+        const good = dl < dr ? 'left' : 'right';
+        const bad = good === 'left' ? 'right' : 'left';
+        const gw = joints[`${good}Hand`], bw = joints[`${bad}Hand`];
+        for (const src of [joints, tails]) {
+          for (const name of Object.keys(src)) {
+            if (!name.startsWith(good) || !/(Thumb|Index|Middle|Ring|Little)/.test(name)) continue;
+            const p = src[name];
+            src[`${bad}${name.slice(good.length)}`] = [bw[0] - (p[0] - gw[0]), bw[1] + (p[1] - gw[1]), bw[2] + (p[2] - gw[2])];
+          }
+        }
+        fingers[bad] = { ...fingers[good] };
+        notes.push(`The ${bad} hand's fingers were unclear, so they mirror the ${good} hand's.`);
+      }
+    }
   }
 
   let confidence = 1;

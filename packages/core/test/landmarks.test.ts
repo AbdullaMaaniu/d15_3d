@@ -51,4 +51,31 @@ describe('detectHumanoid', () => {
     expect(result.joints.leftIndexProximal).toBeDefined();
     expect(result.joints.rightThumbDistal).toBeDefined();
   });
+
+  it('mirrors the good hand when one hand is misread', () => {
+    const { geometry, truth } = createMannequin({ pose: 'T', fingers: true });
+    const positions = Float32Array.from(geometry.attributes.position.array as Float32Array);
+    const index = new Uint32Array(geometry.index!.array);
+    // Bend the right hand (everything past the wrist) 30 degrees back at the wrist.
+    const [wx, wy, wz] = truth.joints.rightHand;
+    const a = (30 * Math.PI) / 180;
+    for (let v = 0; v < positions.length / 3; v++) {
+      const x = positions[v * 3] - wx, z = positions[v * 3 + 2] - wz;
+      if (x > -0.005) continue;
+      positions[v * 3] = wx + x * Math.cos(a) - z * Math.sin(a);
+      positions[v * 3 + 2] = wz + x * Math.sin(a) + z * Math.cos(a);
+    }
+    const plain = detectHumanoid(Float32Array.from(geometry.attributes.position.array as Float32Array), index, { fingers: true });
+    const bent = detectHumanoid(positions, index, { fingers: true });
+    expect(plain.notes.join(' ')).not.toMatch(/mirror/);
+    expect(bent.notes.join(' ')).toMatch(/right hand's fingers were unclear/);
+    // The right fingers are now the left ones mirrored across the wrists.
+    const lw = bent.joints.leftHand, rw = bent.joints.rightHand;
+    for (const f of ['IndexProximal', 'MiddleDistal', 'ThumbProximal', 'LittleProximal']) {
+      const l = bent.joints[`left${f}`], r = bent.joints[`right${f}`];
+      expect(r[0] - rw[0]).toBeCloseTo(-(l[0] - lw[0]), 5);
+      expect(r[1] - rw[1]).toBeCloseTo(l[1] - lw[1], 5);
+      expect(r[2] - rw[2]).toBeCloseTo(l[2] - lw[2], 5);
+    }
+  });
 });

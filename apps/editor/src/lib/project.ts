@@ -4,6 +4,7 @@ import {
   analyzeMesh,
   autoMapBones,
   bindSkeleton,
+  setArmSpacing,
   buildSkinnedCharacter,
   computeNormalization,
   decodeClip,
@@ -51,6 +52,8 @@ interface ProjectFile {
   extraBones?: CreatureBone[];
   springs?: SpringConfig;
   controller?: ControllerSetup | null;
+  /** Degrees added to the measured arm clearance. */
+  armSpacing?: number;
   /** Whether the prop rig was built (props don't store weights: they're rigid). */
   propBuilt?: boolean;
 }
@@ -110,6 +113,7 @@ export async function saveProject(s: StoreState): Promise<Blob> {
     extraBones: s.extraBones,
     springs: s.springs,
     controller: s.controller,
+    armSpacing: s.armSpacing,
     propBuilt: s.rigType === 'prop' && !!built,
     rig: built && s.rigType !== 'prop' && s.joints
       ? {
@@ -164,6 +168,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     normalized,
     fingers: file.fingers,
     weightSettings: file.weightSettings,
+    armSpacing: file.armSpacing ?? 0,
     detection: file.detection,
     joints: file.joints,
     character: null,
@@ -219,6 +224,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     }
     const built = buildSkinnedCharacter(normalizedGeometry, materials, baseDefs(humanoidDefs(file.fingers)), file.joints, skinIndex, skinWeight, 'Character');
     const binding = bindSkeleton(built.root, autoMapBones(built.root).map);
+    setArmSpacing(binding, file.armSpacing ?? 0);
     const clips: ClipEntry[] = file.clips.map((c, i) => {
       const entry = { id: `p${Date.now().toString(36)}${i}`, name: c.name, source: c.source, normalized: decodeClip(c.clip!), loop: c.loop, inPlace: c.inPlace, speed: c.speed, trim: c.trim, keys: c.keys };
       return { ...entry, baked: bake(entry, binding) };

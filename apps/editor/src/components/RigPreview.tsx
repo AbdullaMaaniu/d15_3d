@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { AnimationMixer, Box3, Vector3, type AnimationClip, type Object3D } from 'three';
-import { autoMapBones, bakeClip, bakePropClip, bindSkeleton, buildSkinnedCharacter, decodeClip, quadrupedGaits } from '@rigforge/core';
+import { autoMapBones, bakeClip, bakePropClip, bindSkeleton, buildSkinnedCharacter, decodeClip, quadrupedGaits, setArmSpacing } from '@rigforge/core';
 import { PRESETS, rigInputs, useStore } from '../store';
 import { computeWeights } from '../lib/rigClient';
 
@@ -94,7 +94,11 @@ export function RigPreview() {
           if (gait) clip = bakePropClip(built, gait.keys, gait.name);
         } else {
           const preset = PRESETS.find((p) => p.id === clipId);
-          if (preset) clip = bakeClip(bindSkeleton(built.root, autoMapBones(built.root).map), decodeClip(preset), { inPlace: true, name: preset.name });
+          if (preset) {
+            const binding = bindSkeleton(built.root, autoMapBones(built.root).map);
+            setArmSpacing(binding, useStore.getState().armSpacing);
+            clip = bakeClip(binding, decodeClip(preset), { inPlace: true, name: preset.name });
+          }
         }
         built.root.traverse((o) => (o.frustumCulled = false));
         const box = new Box3().setFromBufferAttribute(normalized.geometry.attributes.position as never);

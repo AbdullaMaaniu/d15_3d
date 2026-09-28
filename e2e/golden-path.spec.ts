@@ -41,6 +41,13 @@ test('sample mannequin: import → rig → animate → export', async ({ page })
   await page.getByRole('button', { name: /Add animations/ }).click();
   await page.getByRole('button', { name: /Idle, Walk, Run, Jump/ }).click();
   await expect(page.locator('.clip')).toHaveCount(4);
+  // Arm spacing is measured from the mesh; moving the slider rebakes the clips.
+  await expect(page.getByText(/hanging arms need \d+° to clear the body/)).toBeVisible();
+  const baked = () => page.evaluate(() => (window as any).rigforge.getState().clips[0].baked);
+  const before = await baked();
+  await page.getByRole('slider', { name: 'Arm spacing' }).fill('10');
+  await expect(page.getByText(/Arm spacing: \+10°/)).toBeVisible();
+  await expect.poll(async () => (await baked()) !== before).toBe(true);
   await page.getByRole('button', { name: 'Play Run' }).click();
   await page.waitForTimeout(700);
   if (shots) await page.screenshot({ path: `${shots}/6-animate.png` });

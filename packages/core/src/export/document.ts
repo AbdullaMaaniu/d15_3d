@@ -9,6 +9,7 @@ import { computeSkinWeights } from '../rig/weights';
 import { humanoidDefs, type BoneDef, type JointMap } from '../skeleton';
 import { autoMapBones } from '../anim/bonemap';
 import { bakeClip, bindSkeleton } from '../anim/retarget';
+import { armClearance } from '../anim/armClearance';
 import { decodeClip, type PresetPack } from '../anim/codec';
 import { quadrupedGaits } from '../anim/gaits';
 import { bakePropClip } from '../rig/prop';
@@ -253,6 +254,9 @@ export async function rigDocument(doc: Document, options: RigDocumentOptions = {
     }
   } else if (options.presets) {
     const binding = bindSkeleton(group, autoMapBones(group).map);
+    // The group has no mesh to measure; use the rig's own vertices and weights.
+    binding.autoArmClearance = armClearance(normalized, w.skinIndex, w.skinWeight, defs.map((d) => d.name), (c) => joints.joints[c]);
+    binding.armClearance = { ...binding.autoArmClearance };
     for (const e of options.presets.clips) {
       if (want !== 'all' && !want.includes(e.id)) continue;
       const n = decodeClip(e);
