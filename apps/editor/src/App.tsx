@@ -1,6 +1,7 @@
 import { Suspense, useEffect } from 'react';
 import { STEPS, useStore, type Step } from './store';
 import { Viewport } from './components/Viewport';
+import { TestDrive } from './components/TestDrive';
 import { Timeline } from './components/Timeline';
 import { Busy, FilePicker, Logo } from './components/ui';
 import { RestoreBanner } from './components/RestoreBanner';
@@ -26,6 +27,12 @@ export function App() {
   const report = useStore((s) => s.report);
   const openProject = useStore((s) => s.openProject);
   const saveProjectFile = useStore((s) => s.saveProjectFile);
+  const driving = useStore((s) => !!s.testDrive) && step === 'export';
+
+  // Leaving the export step ends a test drive.
+  useEffect(() => {
+    if (step !== 'export' && useStore.getState().testDrive) useStore.getState().set('testDrive', null);
+  }, [step]);
 
   // Drop a file anywhere to (re)start.
   useEffect(() => {
@@ -88,9 +95,13 @@ export function App() {
           {step === 'export' && <ExportPanel />}
         </aside>
         <section className="stage">
-          <Suspense fallback={null}>
-            <Viewport />
-          </Suspense>
+          {driving ? (
+            <TestDrive />
+          ) : (
+            <Suspense fallback={null}>
+              <Viewport />
+            </Suspense>
+          )}
           {!hasModel && step === 'import' && (
             <div className="empty">
               <div className="card">
@@ -101,9 +112,9 @@ export function App() {
               </div>
             </div>
           )}
-          {character && step !== 'import' && step !== 'orient' && <ShadingToolbar />}
-          {character && (step === 'animate' || step === 'export' || step === 'rig') && <Timeline />}
-          <div className="overlay">
+          {character && !driving && step !== 'import' && step !== 'orient' && <ShadingToolbar />}
+          {character && !driving && (step === 'animate' || step === 'export' || step === 'rig') && <Timeline />}
+          <div className="overlay" hidden={driving}>
             {step === 'rig' && !character && <span className="pill">Drag markers · Orbit: drag empty space · Zoom: scroll</span>}
             {step === 'orient' && <span className="pill">Orange arrow = front (+Z)</span>}
           </div>

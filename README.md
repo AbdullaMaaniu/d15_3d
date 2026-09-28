@@ -8,7 +8,8 @@ Drop in a GLB/FBX/OBJ from Meshy (or any humanoid mesh), or import straight from
 2. **Auto-rig** it: detects joints (T- or A-pose), including **15 finger bones per hand**, fits a VRM-compatible humanoid skeleton and computes skin weights with **geodesic voxel binding**, which is robust to the open, self-intersecting meshes AI generators produce.
 3. **Animate** it: add 18 motion-capture presets (idle, walk, run, jump, wave, punch, kick, dance…) or retarget your own **Mixamo FBX, BVH or GLB** clips. Clips can loop, play in place, change speed or be mirrored.
 4. **Refine** it: paint skin weights with a brush (add/subtract/smooth, mirrored), trim clips, and keyframe bones with a rotate gizmo, either to fix a retargeted clip or to pose a new one from scratch.
-5. **Export** it: one optimized GLB (meshopt geometry/animation compression, WebP textures, keyframe reduction) plus copy-paste code for three.js or React Three Fiber.
+5. **Export** it: one optimized GLB (meshopt geometry/animation compression, WebP textures, keyframe reduction) plus copy-paste code for three.js or React Three Fiber. The file carries a **game controller setup** (which clip is idle/walk/run/jump/an action, with speeds measured from the clips) and any **spring bones** (hair, tails, capes).
+6. **Test drive** it: play the exported file right in the editor with WASD, Shift to run, Space to jump and number keys for actions, on hilly ground with foot IK, using the same `@rigforge/three` runtime your game will.
 
 Besides humanoids it rigs **animals** (auto-detected legs, spine, neck, head and tail, with procedural walk/trot/gallop gaits), **custom creatures** (click on the model to build any skeleton: dragons, spiders, snakes, tentacles) and **props**: a chest lid, a door, a wheel or a turret. Each separate part gets a bone and pivot, and generated motions (spin, swing, slide, bob) or keyframes animate them.
 
@@ -58,7 +59,12 @@ character.attach('rightHand', sword);           // canonical bone names
 character.lookAt(camera);                       // procedural head tracking
 character.on('finished', ({ name }) => character.play('Idle'));
 
-// Or drive it from a state machine: phase-synced idle/walk/run blend + a jump.
+// Game-ready in one line: uses the controller setup saved in the file.
+const controller = character.autoStateMachine();
+controller.set('speed', velocity.length()); // blends Idle → Walk → Run
+controller.trigger('jump');                 // and one trigger per action, e.g. 'punch'
+
+// Or write your own state machine: phase-synced idle/walk/run blend + a jump.
 const sm = character.stateMachine({
   initial: 'move',
   parameters: { speed: 0 },
@@ -130,8 +136,8 @@ The compiled WASM module is committed, so JavaScript-only contributors don't nee
 ## Roadmap
 
 - **Done:** humanoid pipeline with finger bones, presets, retargeting, optimized export, three.js/R3F runtime; weight painting, keyframe editor, clip trimming, prop rigs, project files and autosave; state machines, layers, root motion and foot IK in the runtime.
-- **Also done:** quadruped template with gaits, custom creature skeletons, CLI batch mode, Meshy API import.
-- **Later:** procedural secondary motion (spring bones), and a pluggable AI text-to-motion provider.
+- **Also done:** quadruped template with gaits, custom creature skeletons, CLI batch mode, Meshy API import, spring bones, exported controller setups and an in-editor test drive.
+- **Later:** a pluggable AI text-to-motion provider.
 
 ## Credits & licenses
 

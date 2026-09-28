@@ -30,5 +30,17 @@ test('rig and animate an animal (sample dog)', async ({ page }) => {
   await page.getByRole('button', { name: /^Export →/ }).click();
   await page.getByRole('button', { name: 'Build GLB' }).click();
   await expect(page.getByRole('button', { name: /Download .*\.glb/ })).toBeVisible();
+
+  // Test drive: gaits blend by speed; no foot IK toggle for four legs.
+  await page.getByRole('button', { name: '▶ Test drive' }).click();
+  await expect(page.getByTestId('drive-state')).toContainText('move', { timeout: 30_000 });
+  await expect(page.getByText('Foot IK')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).rigforgeDrive.character.controllerSetup.locomotion.map((l: [number, string]) => l[1]))).toEqual(['Idle', 'Walk', 'Trot', 'Gallop']);
+  await page.keyboard.down('KeyW');
+  await page.keyboard.down('Shift');
+  await expect.poll(() => page.evaluate(() => (window as any).rigforgeDrive.position[2]), { timeout: 15_000 }).toBeGreaterThan(0.5);
+  if (shots) await page.screenshot({ path: `${shots}/dog-drive.png` });
+  await page.keyboard.up('Shift');
+  await page.keyboard.up('KeyW');
   expect(errors).toEqual([]);
 });

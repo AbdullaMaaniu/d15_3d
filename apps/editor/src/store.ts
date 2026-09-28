@@ -200,6 +200,8 @@ interface State {
   exportName: string;
   exportPreset: 'web' | 'mobile' | 'lossless';
   exportResult: ExportResult | null;
+  /** GLB being driven in the test drive (null = editor view). */
+  testDrive: Uint8Array | null;
 }
 
 interface Actions {
@@ -352,6 +354,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   exportName: 'character',
   exportPreset: 'web',
   exportResult: null,
+  testDrive: null,
 
   set: (key, value) => set({ [key]: value } as any),
   setError: (error) => set({ error }),
@@ -1171,6 +1174,14 @@ function rebakeAll() {
   if (!character) return;
   useStore.setState({ clips: clips.map((c) => ({ ...c, baked: bakeEntry(c) })) });
 }
+
+// A built GLB goes stale when the rig, clips or exported extras change.
+useStore.subscribe((s, prev) => {
+  if (!s.exportResult || s.exportResult !== prev.exportResult) return;
+  if (s.character !== prev.character || s.clips !== prev.clips || s.weightsVersion !== prev.weightsVersion || s.springs !== prev.springs || s.controller !== prev.controller || s.exportPreset !== prev.exportPreset) {
+    useStore.setState({ exportResult: null });
+  }
+});
 
 // Autosave a couple of seconds after meaningful edits.
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
