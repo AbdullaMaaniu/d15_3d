@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
-import { FilePicker, Notes, Section } from '../components/ui';
+import { FilePicker, Notes, Section, Seg } from '../components/ui';
 
 export function DropZone() {
   const loadFromFiles = useStore((s) => s.loadFromFiles);
@@ -29,6 +29,9 @@ export function DropZone() {
         <button className="btn" onClick={() => void loadSample('A')}>
           Try a sample
         </button>
+        <button className="btn ghost" onClick={() => void loadSample('prop')} title="A treasure chest, to try prop rigging">
+          Sample prop
+        </button>
       </div>
       <p className="footer-note">Files never leave your browser.</p>
     </div>
@@ -41,6 +44,8 @@ export function ImportPanel() {
   const existingRig = useStore((s) => s.existingRig);
   const goto = useStore((s) => s.goto);
   const useExisting = useStore((s) => s.useExistingRig);
+  const rigType = useStore((s) => s.rigType);
+  const setRigType = useStore((s) => s.setRigType);
 
   return (
     <>
@@ -51,6 +56,21 @@ export function ImportPanel() {
       <DropZone />
       {report && file && (
         <>
+          <Section title="What is it?">
+            <Seg
+              value={rigType}
+              onChange={setRigType}
+              options={[
+                ['humanoid', 'Character (humanoid)'],
+                ['prop', 'Prop / object'],
+              ]}
+            />
+            <p className="footer-note">
+              {rigType === 'humanoid'
+                ? 'Auto-rigged with a full humanoid skeleton, including fingers.'
+                : 'Doors, chests, wheels, turrets… Each separate part gets a pivot you can spin, swing or slide.'}
+            </p>
+          </Section>
           <Section title={file.name}>
             <div className="stats">
               <div><span>Triangles</span><span>{report.triangles.toLocaleString()}</span></div>

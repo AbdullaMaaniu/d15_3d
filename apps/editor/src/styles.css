@@ -163,3 +163,5 @@ pre.code { margin: 0; background: #0d0f13; border: 1px solid var(--line); border
 .timeline .keys { position: absolute; left: 7px; right: 7px; top: -9px; height: 8px; pointer-events: none; }
 .timeline .key { position: absolute; width: 7px; height: 7px; margin-left: -3.5px; transform: rotate(45deg); background: #6b7383; }
 .timeline .key.mine { background: var(--accent); }
+
+.grid2 .text, .grid3 .text { width: 100%; }

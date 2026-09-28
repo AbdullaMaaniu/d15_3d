@@ -6,6 +6,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { computeNormalization } from '@rigforge/core';
 import { useStore } from '../store';
 import { JointEditor } from './JointEditor';
+import { PropEditor } from './PropEditor';
 import { CharacterView } from './CharacterView';
 
 function RoomEnv() {
@@ -82,14 +83,25 @@ function FrontIndicator({ height }: { height: number }) {
 function CameraTarget() {
   const height = useStore((s) => s.height);
   const step = useStore((s) => s.step);
+  const normalized = useStore((s) => s.normalized);
   const controls = useThree((s) => s.controls) as unknown as { target: import('three').Vector3; update(): void } | null;
   const camera = useThree((s) => s.camera);
+  const aspect = useThree((s) => s.size.width / Math.max(1, s.size.height));
   useEffect(() => {
     if (!controls) return;
-    controls.target.set(0, height * 0.52, 0);
-    camera.position.set(0, height * 0.62, height * 2.1);
+    // Frame the whole model: tall characters by height, wide props by width.
+    let width = height * 0.6, depth = height * 0.4;
+    if (normalized) {
+      normalized.geometry.computeBoundingBox();
+      const bb = normalized.geometry.boundingBox!;
+      width = bb.max.x - bb.min.x;
+      depth = bb.max.z - bb.min.z;
+    }
+    const fit = Math.max(height, width / Math.min(aspect, 1.6), depth);
+    controls.target.set(0, height * 0.5, 0);
+    camera.position.set(0, height * 0.5 + fit * 0.18, depth / 2 + fit * 2.1);
     controls.update();
-  }, [controls, camera, height, step]);
+  }, [controls, camera, height, step, normalized, aspect]);
   return null;
 }
 
@@ -111,6 +123,7 @@ export function Viewport() {
   const character = useStore((s) => s.character);
   const height = useStore((s) => s.height);
   const hasModel = useStore((s) => !!s.prepared);
+  const isProp = useStore((s) => s.rigType === 'prop');
 
   return (
     <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 1.1, 3.8], fov: 38, near: 0.01, far: 200 }} gl={{ preserveDrawingBuffer: true }}>
@@ -128,12 +141,13 @@ export function Viewport() {
 
       {(step === 'import' || step === 'orient') && hasModel && <SourceView />}
       {step === 'orient' && <FrontIndicator height={height} />}
-      {step === 'rig' && !character && (
+      {step === 'rig' && !character && !isProp && (
         <>
           <NormalizedView />
           <JointEditor />
         </>
       )}
+      {step === 'rig' && !character && isProp && <PropEditor />}
       {character && step !== 'import' && step !== 'orient' && <CharacterView />}
 
       {!small && (

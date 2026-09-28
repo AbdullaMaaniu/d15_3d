@@ -7,7 +7,12 @@ Drop in a GLB/FBX/OBJ from Meshy (or any humanoid mesh), and RigForge will:
 1. **Clean & orient** it: merges parts, fixes degenerate triangles, stands it upright facing +Z at real-world scale.
 2. **Auto-rig** it: detects joints (T- or A-pose), including **15 finger bones per hand**, fits a VRM-compatible humanoid skeleton and computes skin weights with **geodesic voxel binding**, which is robust to the open, self-intersecting meshes AI generators produce.
 3. **Animate** it: add 18 motion-capture presets (idle, walk, run, jump, wave, punch, kick, dance…) or retarget your own **Mixamo FBX, BVH or GLB** clips. Clips can loop, play in place, change speed or be mirrored.
-4. **Export** it: one optimized GLB (meshopt geometry/animation compression, WebP textures, keyframe reduction) plus copy-paste code for three.js or React Three Fiber.
+4. **Refine** it: paint skin weights with a brush (add/subtract/smooth, mirrored), trim clips, and keyframe bones with a rotate gizmo, either to fix a retargeted clip or to pose a new one from scratch.
+5. **Export** it: one optimized GLB (meshopt geometry/animation compression, WebP textures, keyframe reduction) plus copy-paste code for three.js or React Three Fiber.
+
+It also rigs **props**: a chest lid, a door, a wheel or a turret. Each separate part gets a bone and pivot, and generated motions (spin, swing, slide, bob) or keyframes animate them.
+
+Projects save to a `.rigforge` file and autosave in the browser, so you can pick up where you left off.
 
 Nothing is uploaded. Heavy compute runs in a Web Worker using Rust compiled to WebAssembly, with a TypeScript fallback.
 
@@ -33,6 +38,23 @@ character.attach('rightHand', sword);           // canonical bone names
 character.lookAt(camera);                       // procedural head tracking
 character.on('finished', ({ name }) => character.play('Idle'));
 
+// Or drive it from a state machine: phase-synced idle/walk/run blend + a jump.
+const sm = character.stateMachine({
+  initial: 'move',
+  parameters: { speed: 0 },
+  states: {
+    move: { blend: { param: 'speed', clips: [[0, 'Idle'], [1.4, 'Walk'], [4, 'Run']] } },
+    jump: { clip: 'Jump', loop: false },
+  },
+  transitions: [
+    { from: 'move', to: 'jump', when: [{ trigger: 'jump' }] },
+    { from: 'jump', to: 'move', exitTime: 0.9 },
+  ],
+});
+sm.set('speed', velocity.length());
+character.playLayer('attack', 'Punch', { mask: 'upperBody', loop: false }); // punch while walking
+character.enableFootIK({ ground: [terrain] });                              // plant feet on slopes and steps
+
 renderer.setAnimationLoop(() => {
   character.update(clock.getDelta());
   renderer.render(scene, camera);
@@ -57,7 +79,7 @@ Exported files are standard glTF 2.0, so plain `GLTFLoader` + `AnimationMixer` w
 |---|---|
 | [`apps/editor`](apps/editor) | The RigForge web app (Vite + React + React Three Fiber). |
 | [`@rigforge/core`](packages/core) | Mesh prep, joint detection, skin weights, retargeting, clip tools and GLB export. Framework-agnostic, runs in browsers, workers and Node. |
-| [`@rigforge/three`](packages/three) | Tiny runtime (~3 KB gzipped): `loadCharacter`, `Character.play/crossFadeTo/attach/lookAt/on/clone`. |
+| [`@rigforge/three`](packages/three) | Small runtime: `loadCharacter`, playback and crossfades, state machines with 1D blends, masked/additive layers, root motion, foot IK, look-at, bone attachment. |
 | [`@rigforge/r3f`](packages/r3f) | `<Character>`, `<Attach>`, `useCharacter()` for React Three Fiber. |
 | [`@rigforge/presets`](packages/presets) | Humanoid motion presets retargeted from the CMU motion capture database. |
 | [`crates/kernels`](crates/kernels) | Rust kernels (solid voxelization, geodesic bone distances) compiled to a dependency-free WASM module. |
@@ -86,8 +108,7 @@ The compiled WASM module is committed, so JavaScript-only contributors don't nee
 
 ## Roadmap
 
-- **Now (MVP):** humanoid pipeline, finger bones, presets, retargeting, optimized export, three.js/R3F runtime.
-- **Next:** weight painting, keyframe/timeline editor, clip trimming, prop and mechanical rigs, project save/load, animation state machine and foot IK in the runtime.
+- **Done:** humanoid pipeline with finger bones, presets, retargeting, optimized export, three.js/R3F runtime; weight painting, keyframe editor, clip trimming, prop rigs, project files and autosave; state machines, layers, root motion and foot IK in the runtime.
 - **Later:** quadruped and custom skeleton templates, procedural secondary motion, Meshy API import, CLI batch mode, and a pluggable AI text-to-motion provider.
 
 ## Credits & licenses

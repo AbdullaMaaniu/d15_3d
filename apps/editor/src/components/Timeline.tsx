@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { keyTimes } from '@rigforge/core';
+import { keyTimes, propKeyTimes } from '@rigforge/core';
 import { useStore } from '../store';
 
 export function Timeline() {
@@ -15,8 +15,9 @@ export function Timeline() {
   const entry = clips.find((c) => c.id === activeClip);
   const clip = testClip ?? entry?.baked;
   const editing = !!entry && keyEdit.clipId === entry.id;
-  const all = editing ? keyTimes(entry!.keys) : [];
-  const mine = editing && keyEdit.bone ? keyTimes(entry!.keys, keyEdit.bone) : [];
+  const times = (bone?: string) => (entry?.propKeys ? propKeyTimes(entry.propKeys, bone) : keyTimes(entry?.keys, bone));
+  const all = editing ? times() : [];
+  const mine = editing && keyEdit.bone ? times(keyEdit.bone) : [];
   const duration = clip?.duration ?? 0;
   const t = duration > 0 ? time % (duration + 1e-6) : 0;
 

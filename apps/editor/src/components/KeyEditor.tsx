@@ -17,12 +17,13 @@ export function KeyEditor({ root }: { root: Object3D }) {
   const setKeyEdit = useStore((s) => s.setKeyEdit);
   const keyCurrentPose = useStore((s) => s.keyCurrentPose);
 
+  const built = useStore((s) => s.character?.built ?? null);
   const bones = useMemo(() => {
-    if (!binding) return [] as Array<{ name: string; node: Object3D; finger: boolean }>;
+    if (!binding) return (built?.skeleton.bones ?? []).map((node) => ({ name: node.name, node: node as Object3D, finger: false }));
     return humanoidDefs(fingers)
       .map((d) => ({ name: d.name, node: binding.map[d.name] ? root.getObjectByName(binding.map[d.name]) : undefined, finger: d.isFinger }))
       .filter((b): b is { name: string; node: Object3D; finger: boolean } => !!b.node);
-  }, [binding, fingers, root]);
+  }, [binding, built, fingers, root]);
 
   const handles = useRef<Array<Mesh | null>>([]);
   const tmp = useMemo(() => new Vector3(), []);
@@ -34,7 +35,8 @@ export function KeyEditor({ root }: { root: Object3D }) {
   });
 
   const selected = bones.find((b) => b.name === keyEdit.bone);
-  const mode = keyEdit.bone === 'hips' ? keyEdit.mode : 'rotate';
+  // Humanoids move only the hips; prop bones can all slide.
+  const mode = keyEdit.bone === 'hips' || !binding ? keyEdit.mode : 'rotate';
   return (
     <>
       {bones.map((b, i) => {

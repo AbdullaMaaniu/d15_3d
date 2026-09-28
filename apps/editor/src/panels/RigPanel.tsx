@@ -2,8 +2,14 @@ import { useEffect } from 'react';
 import { humanoidDefs } from '@rigforge/core';
 import { PRESETS, useStore } from '../store';
 import { Check, Notes, Section, Seg } from '../components/ui';
+import { PropRigPanel } from './PropRigPanel';
 
 export function RigPanel() {
+  const isProp = useStore((s) => s.rigType === 'prop');
+  return isProp ? <PropRigPanel /> : <HumanoidRigPanel />;
+}
+
+function HumanoidRigPanel() {
   const detection = useStore((s) => s.detection);
   const joints = useStore((s) => s.joints);
   const busy = useStore((s) => s.busy);

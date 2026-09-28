@@ -1,4 +1,4 @@
-import { AnimationClip, Group, LoadingManager, Mesh, MeshStandardMaterial, type Object3D } from 'three';
+import { AnimationClip, BoxGeometry, CylinderGeometry, Group, LoadingManager, Mesh, MeshStandardMaterial, type Object3D } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
@@ -83,4 +83,21 @@ export function hasSkeleton(scene: Object3D): boolean {
     if ((o as any).isSkinnedMesh) found = true;
   });
   return found;
+}
+
+/** Sample prop: a treasure chest with a separate lid and lock (made of distinct parts). */
+export function loadSampleProp(): LoadedFile {
+  const wood = new MeshStandardMaterial({ color: 0x8b5a2b, roughness: 0.8 });
+  const metal = new MeshStandardMaterial({ color: 0xd4a017, roughness: 0.35, metalness: 0.8 });
+  const root = new Group();
+  const add = (g: import('three').BufferGeometry, m: MeshStandardMaterial, name: string) => {
+    const mesh = new Mesh(g, m);
+    mesh.name = name;
+    root.add(mesh);
+  };
+  add(new BoxGeometry(1, 0.55, 0.6).translate(0, 0.275, 0), wood, 'Body');
+  add(new BoxGeometry(1.04, 0.16, 0.64).translate(0, 0.64, 0), wood, 'Lid');
+  add(new CylinderGeometry(0.03, 0.03, 1.06, 12).rotateZ(Math.PI / 2).translate(0, 0.575, -0.31), metal, 'Hinge');
+  add(new BoxGeometry(0.12, 0.14, 0.04).translate(0, 0.49, 0.32), metal, 'Lock');
+  return { name: 'treasure-chest.glb', scene: root, animations: [] };
 }

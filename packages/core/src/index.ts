@@ -35,3 +35,7 @@ export {
   sampleBoneOffset, sampleHipsOffset, rigLocalToNormalized, rigHipsToNormalized, sampleNormalized,
   sampleNormalizedHips, bindPoseClip, type KeyLayer, type KeyChannel,
 } from './anim/keys';
+export {
+  splitParts, buildPropCharacter, propMotionKeys, bakePropClip, setPropKey, deletePropKeys, propKeyTimes,
+  type MeshPart, type PartSplit, type PropBone, type PropRig, type PropKeys, type PropMotion,
+} from './rig/prop';

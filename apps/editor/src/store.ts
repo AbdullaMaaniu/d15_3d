@@ -2,6 +2,17 @@ import { create } from 'zustand';
 import { AnimationClip, BufferGeometry, Quaternion, Vector3, type Object3D, type SkinnedMesh } from 'three';
 import {
   alignHeading,
+  bakePropClip,
+  buildPropCharacter,
+  deletePropKeys,
+  propMotionKeys,
+  setPropKey,
+  splitParts,
+  type PartSplit,
+  type PropBone,
+  type PropKeys,
+  type PropMotion,
+  type PropRig,
   applyKeyLayer,
   bindPoseClip,
   deleteKeys,
@@ -48,7 +59,7 @@ import {
   type EncodedClip,
 } from '@rigforge/core';
 import presetPack from '@rigforge/presets/clips.json';
-import { hasSkeleton, loadFiles, loadSample, type LoadedFile } from './lib/loaders';
+import { hasSkeleton, loadFiles, loadSample, loadSampleProp, type LoadedFile } from './lib/loaders';
 import { computeWeights, detectJoints, type WeightSettings } from './lib/rigClient';
 import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
 
@@ -68,6 +79,8 @@ export interface ClipEntry {
   trim?: [number, number];
   /** Hand-authored keys layered over the (trimmed) clip. */
   keys?: KeyLayer;
+  /** Prop clips: keys on the prop's own bones (no retargeting). */
+  propKeys?: PropKeys;
   baked: AnimationClip;
 }
 
@@ -119,6 +132,10 @@ interface State {
   kernel: string | null;
   rigTimings: Record<string, number> | null;
 
+  rigType: 'humanoid' | 'prop';
+  propSplit: PartSplit | null;
+  propRig: PropRig | null;
+
   character: CharacterState | null;
   binding: SkeletonBinding | null;
   testClip: AnimationClip | null;
@@ -150,7 +167,7 @@ interface Actions {
   goto(step: Step): void;
   setError(e: string | null): void;
   loadFromFiles(files: File[]): Promise<void>;
-  loadSampleModel(pose: 'T' | 'A'): Promise<void>;
+  loadSampleModel(pose: 'T' | 'A' | 'prop'): Promise<void>;
   rotate(axis: 'x' | 'y' | 'z', degrees: number): void;
   autoOrient(): void;
   setHeight(h: number): void;
@@ -187,6 +204,13 @@ interface Actions {
   keyCurrentPose(bone?: string): void;
   deleteKeyAt(time: number, bone?: string): void;
   setClipKeys(id: string, keys: KeyLayer | undefined): void;
+  setRigType(t: 'humanoid' | 'prop'): void;
+  addPropBone(): void;
+  updatePropBone(name: string, patch: Partial<PropBone>): void;
+  removePropBone(name: string): void;
+  assignPart(part: number): void;
+  buildPropRig(): void;
+  addPropMotion(motion: PropMotion, name: string): void;
   openProject(blob: Blob): Promise<void>;
 }
 
@@ -203,7 +227,28 @@ function trimmed(entry: Omit<ClipEntry, 'baked'>): NormalizedClip {
   return sliceClip(n, a, b + 1);
 }
 
+function bakeProp(entry: Omit<ClipEntry, 'baked'>): AnimationClip {
+  const built = useStore.getState().character?.built;
+  const duration = (entry.normalized.frames - 1) / entry.normalized.fps;
+  const clip = built ? bakePropClip(built, { ...entry.propKeys!, duration }, entry.name) : new AnimationClip(entry.name, duration, []);
+  clip.userData = { rigforge: { loop: entry.loop, inPlace: false, speed: entry.speed } };
+  return clip;
+}
+
+/** Bakes a clip entry for whatever kind of character is loaded. */
+function bakeEntry(entry: Omit<ClipEntry, 'baked'>): AnimationClip {
+  if (entry.propKeys) return bakeProp(entry);
+  return bake(useStore.getState().binding!, entry);
+}
+
+/** A placeholder timeline for prop clips (they don't use normalized humanoid data). */
+function propTimeline(seconds: number, name: string): NormalizedClip {
+  const frames = Math.max(2, Math.round(seconds * 30) + 1);
+  return { name, fps: 30, frames, bones: [], rotations: new Float32Array(0), hips: new Float32Array(frames * 3), loop: false };
+}
+
 function bake(binding: SkeletonBinding, entry: Omit<ClipEntry, 'baked'>): AnimationClip {
+  if (entry.propKeys) return bakeProp(entry);
   const clip = bakeClip(binding, { ...applyKeyLayer(trimmed(entry), entry.keys), loop: entry.loop }, { inPlace: entry.inPlace, name: entry.name });
   clip.userData = { rigforge: { loop: entry.loop, inPlace: entry.inPlace, speed: entry.speed } };
   return clip;
@@ -230,6 +275,9 @@ export const useStore = create<State & Actions>()((set, get) => ({
   weightSettings: { resolution: 192, falloff: 4, smoothIterations: 2 },
   kernel: null,
   rigTimings: null,
+  rigType: 'humanoid',
+  propSplit: null,
+  propRig: null,
   character: null,
   binding: null,
   testClip: null,
@@ -271,6 +319,12 @@ export const useStore = create<State & Actions>()((set, get) => ({
   },
 
   async loadSampleModel(pose) {
+    if (pose === 'prop') {
+      set({ rigType: 'prop' });
+      ingest(loadSampleProp());
+      return;
+    }
+    set({ rigType: 'humanoid' });
     ingest(loadSample(pose));
   },
 
@@ -311,7 +365,16 @@ export const useStore = create<State & Actions>()((set, get) => ({
       activeClip: null,
       exportResult: null,
     });
-    void get().runDetection();
+    if (get().rigType === 'prop') {
+      const split = splitParts(geometry, 4);
+      geometry.computeBoundingBox();
+      const bb = geometry.boundingBox!;
+      set({
+        propSplit: split,
+        propRig: { bones: [{ name: 'root', parent: null, pivot: [(bb.min.x + bb.max.x) / 2, bb.min.y, (bb.min.z + bb.max.z) / 2] }], partBone: {} },
+        selectedBone: 'root',
+      });
+    } else void get().runDetection();
   },
 
   setFingers(on) {
@@ -468,14 +531,13 @@ export const useStore = create<State & Actions>()((set, get) => ({
   },
 
   updateClip(id, patch) {
-    const binding = get().binding;
-    if (!binding) return;
+    if (!get().character) return;
     set({
       clips: get().clips.map((c) => {
         if (c.id !== id) return c;
         const next = { ...c, ...patch };
         const needsBake = patch.inPlace !== undefined || patch.loop !== undefined || patch.name !== undefined || 'trim' in patch;
-        return needsBake ? { ...next, baked: bake(binding, next) } : next;
+        return needsBake ? { ...next, baked: bakeEntry(next) } : next;
       }),
     });
   },
@@ -569,6 +631,15 @@ export const useStore = create<State & Actions>()((set, get) => ({
 
   newClip(seconds) {
     const binding = get().binding;
+    if (get().rigType === 'prop' && get().character) {
+      const names = new Set(get().clips.map((c) => c.name));
+      let name = 'Animation';
+      for (let i = 2; names.has(name); i++) name = `Animation ${i}`;
+      const entry = { id: `c${++clipCounter}`, name, source: 'Keyframed', normalized: propTimeline(seconds, name), loop: true, inPlace: false, speed: 1, propKeys: { duration: seconds, bones: {} } as PropKeys };
+      set({ clips: [...get().clips, { ...entry, baked: bakeProp(entry) }], time: 0, seek: 0 });
+      get().startKeyEdit(entry.id);
+      return;
+    }
     if (!binding) return;
     const names = new Set(get().clips.map((c) => c.name));
     let name = 'New Clip';
@@ -586,6 +657,14 @@ export const useStore = create<State & Actions>()((set, get) => ({
     const { binding, keyEdit, clips, time, character } = get();
     const bone = boneName ?? keyEdit.bone;
     const entry = clips.find((c) => c.id === keyEdit.clipId);
+    if (entry?.propKeys) {
+      const node = bone ? character?.built?.bones[bone] : undefined;
+      if (!node) return;
+      const t = Math.round(time * 30) / 30;
+      const propKeys = setPropKey(entry.propKeys, node, t);
+      set({ clips: clips.map((c) => (c.id === entry.id ? { ...c, propKeys, baked: bakeProp({ ...c, propKeys }) } : c)), time: t, seek: t });
+      return;
+    }
     const node = bone && binding?.map[bone] ? character?.root.getObjectByName(binding.map[bone]) : undefined;
     if (!binding || !entry || !bone || !node) return;
     const base = trimmed(entry);
@@ -601,9 +680,86 @@ export const useStore = create<State & Actions>()((set, get) => ({
 
   deleteKeyAt(time, bone) {
     const entry = get().clips.find((c) => c.id === get().keyEdit.clipId);
+    if (entry?.propKeys) {
+      const propKeys = deletePropKeys(entry.propKeys, time, bone);
+      set({ clips: get().clips.map((c) => (c.id === entry.id ? { ...c, propKeys, baked: bakeProp({ ...c, propKeys }) } : c)), seek: time });
+      return;
+    }
     if (!entry?.keys) return;
     get().setClipKeys(entry.id, deleteKeys(entry.keys, time, bone));
     set({ seek: time });
+  },
+
+  setRigType(rigType) {
+    const prepared = get().prepared;
+    set({ rigType, rotation: rigType === 'prop' ? new Quaternion() : prepared ? guessOrientation(prepared.geometry).rotation : new Quaternion(), orientNotes: [], height: rigType === 'prop' ? 1 : 1.8 });
+  },
+
+  addPropBone() {
+    const rig = get().propRig;
+    if (!rig) return;
+    const names = new Set(rig.bones.map((b) => b.name));
+    let name = 'part';
+    for (let i = 1; names.has(name); i++) name = `part${i}`;
+    const parent = get().selectedBone && names.has(get().selectedBone!) ? get().selectedBone! : 'root';
+    const pivot = [...rig.bones.find((b) => b.name === parent)!.pivot] as [number, number, number];
+    set({ propRig: { ...rig, bones: [...rig.bones, { name, parent, pivot }] }, selectedBone: name });
+  },
+
+  updatePropBone(name, patch) {
+    const rig = get().propRig;
+    if (!rig) return;
+    const newName = patch.name?.trim().replace(/[^\w-]/g, '_');
+    if (newName !== undefined && (!newName || rig.bones.some((b) => b.name === newName && b.name !== name))) return;
+    const rename = (n: string | null) => (newName && n === name ? newName : n);
+    const bones = rig.bones.map((b) => (b.name === name ? { ...b, ...patch, name: newName ?? b.name } : { ...b, parent: rename(b.parent) }));
+    const partBone = Object.fromEntries(Object.entries(rig.partBone).map(([k, v]) => [k, rename(v)!]));
+    set({ propRig: { bones, partBone }, selectedBone: newName ?? get().selectedBone });
+  },
+
+  removePropBone(name) {
+    const rig = get().propRig;
+    if (!rig || name === 'root') return;
+    const parent = rig.bones.find((b) => b.name === name)?.parent ?? 'root';
+    const bones = rig.bones.filter((b) => b.name !== name).map((b) => (b.parent === name ? { ...b, parent } : b));
+    const partBone = Object.fromEntries(Object.entries(rig.partBone).map(([k, v]) => [k, v === name ? parent : v]));
+    set({ propRig: { bones, partBone }, selectedBone: parent });
+  },
+
+  assignPart(part) {
+    const rig = get().propRig;
+    const bone = get().selectedBone;
+    if (!rig || !bone) return;
+    const partBone = { ...rig.partBone };
+    if (bone === 'root') delete partBone[part];
+    else partBone[part] = bone;
+    set({ propRig: { ...rig, partBone } });
+  },
+
+  buildPropRig() {
+    const { normalized, propSplit, propRig } = get();
+    if (!normalized || !propSplit || !propRig) return;
+    const built = buildPropCharacter(normalized.geometry, normalized.materials, propSplit, propRig, 'Prop');
+    set({ character: { root: built.root, built }, binding: null, unlocked: 4, step: 'animate', shading: 'textured' });
+    // Keep clips from a previous build; drop keys for bones that no longer exist.
+    const names = new Set(propRig.bones.map((b) => b.name));
+    set({
+      clips: get().clips.map((c) =>
+        c.propKeys ? { ...c, propKeys: { ...c.propKeys, bones: Object.fromEntries(Object.entries(c.propKeys.bones).filter(([b]) => names.has(b))) } } : c,
+      ),
+    });
+    rebakeAll();
+  },
+
+  addPropMotion(motion, name) {
+    if (!get().character?.built) return;
+    const names = new Set(get().clips.map((c) => c.name));
+    let n = name;
+    for (let i = 2; names.has(n); i++) n = `${name} ${i}`;
+    const propKeys = propMotionKeys(motion);
+    const loop = motion.type === 'spin' || motion.type === 'bob' || ('pingPong' in motion && motion.pingPong);
+    const entry = { id: `c${++clipCounter}`, name: n, source: `${motion.type} · ${motion.bone}`, normalized: propTimeline(motion.duration, n), loop, inPlace: false, speed: 1, propKeys };
+    set({ clips: [...get().clips, { ...entry, baked: bakeProp(entry) }], activeClip: entry.id, playing: true });
   },
 
   setClipKeys(id, keys) {
@@ -631,7 +787,16 @@ export const useStore = create<State & Actions>()((set, get) => ({
     try {
       const patch = await loadProject(blob, (entry, binding) => bake(binding, entry));
       paintCache = null;
-      set({ ...patch, paint: { ...get().paint, active: false }, testClip: null, selectedBone: null });
+      const pending = (patch as any).pendingPropClips as Array<{ name: string; source: string; loop: boolean; speed: number; propKeys: PropKeys; seconds: number }> | undefined;
+      delete (patch as any).pendingPropClips;
+      set({ ...patch, paint: { ...get().paint, active: false }, testClip: null, selectedBone: patch.selectedBone ?? null });
+      if (pending) {
+        const clips = pending.map((c) => {
+          const entry = { id: `c${++clipCounter}`, name: c.name, source: c.source, normalized: propTimeline(c.seconds, c.name), loop: c.loop, inPlace: false, speed: c.speed, propKeys: c.propKeys };
+          return { ...entry, baked: bakeProp(entry) };
+        });
+        set({ clips, activeClip: clips[0]?.id ?? null, playing: clips.length > 0 });
+      }
     } catch (e) {
       set({ error: `Could not open project: ${(e as Error).message}` });
     } finally {
@@ -679,12 +844,14 @@ function ingest(file: LoadedFile) {
     prepared,
     report,
     existingRig,
-    rotation: guess.rotation,
-    orientNotes: guess.notes,
-    height: 1.8,
+    rotation: useStore.getState().rigType === 'prop' ? new Quaternion() : guess.rotation,
+    orientNotes: useStore.getState().rigType === 'prop' ? [] : guess.notes,
+    height: useStore.getState().rigType === 'prop' ? 1 : 1.8,
     normalized: null,
     detection: null,
     joints: null,
+    propSplit: null,
+    propRig: null,
     character: null,
     binding: null,
     clips: [],
@@ -698,9 +865,9 @@ function ingest(file: LoadedFile) {
 }
 
 function rebakeAll() {
-  const { binding, clips } = useStore.getState();
-  if (!binding) return;
-  useStore.setState({ clips: clips.map((c) => ({ ...c, baked: bake(binding, c) })) });
+  const { character, clips } = useStore.getState();
+  if (!character) return;
+  useStore.setState({ clips: clips.map((c) => ({ ...c, baked: bakeEntry(c) })) });
 }
 
 // Autosave a couple of seconds after meaningful edits.
