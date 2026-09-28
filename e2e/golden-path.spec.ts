@@ -14,7 +14,7 @@ test('sample mannequin: import → rig → animate → export', async ({ page })
   if (shots) await page.screenshot({ path: `${shots}/0-empty.png` });
 
   await page.getByRole('button', { name: 'Try a sample' }).first().click();
-  await expect(page.getByText('Triangles')).toBeVisible();
+  await expect(page.locator('.stats').getByText('Triangles')).toBeVisible();
   if (shots) await page.screenshot({ path: `${shots}/1-import.png` });
 
   await page.getByRole('button', { name: /Continue to orientation/ }).click();

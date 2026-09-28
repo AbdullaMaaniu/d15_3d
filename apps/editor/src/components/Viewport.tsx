@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { GizmoHelper, GizmoViewport, Grid, OrbitControls } from '@react-three/drei';
-import { PMREMGenerator, type Mesh } from 'three';
+import { BufferAttribute, BufferGeometry, PMREMGenerator, type Mesh } from 'three';
+import { polygonEdges } from '../lib/remesh';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { computeNormalization } from '@rigforge/core';
 import { fitFor, useStore } from '../store';
@@ -33,6 +34,25 @@ function SourceView() {
   const rotation = useStore((s) => s.rotation);
   const height = useStore((s) => s.height);
   const ref = useRef<Mesh>(null);
+  const wireframe = useStore((s) => s.wireframe);
+  const edges = useMemo(() => {
+    if (!wireframe || !prepared) return null;
+    const g = new BufferGeometry();
+    g.setAttribute('position', prepared.geometry.attributes.position);
+    g.setIndex(new BufferAttribute(polygonEdges(prepared.geometry), 1));
+    return g;
+  }, [wireframe, prepared]);
+  useEffect(() => () => edges?.dispose(), [edges]);
+  // Push the surface back a little so the edges don't z-fight with it.
+  useEffect(() => {
+    if (!prepared) return;
+    for (const m of prepared.materials) {
+      m.polygonOffset = !!edges;
+      m.polygonOffsetFactor = edges ? 1 : 0;
+      m.polygonOffsetUnits = edges ? 1 : 0;
+      m.needsUpdate = true;
+    }
+  }, [prepared, edges]);
   const matrix = useMemo(
     () => (prepared ? computeNormalization(prepared.geometry, { rotation, targetHeight: height, fit: fitFor(rigType) }).matrix : null),
     [prepared, rotation, height, rigType],
@@ -44,7 +64,15 @@ function SourceView() {
     }
   }, [matrix]);
   if (!prepared) return null;
-  return <mesh ref={ref} geometry={prepared.geometry} material={prepared.materials} matrixAutoUpdate={false} castShadow />;
+  return (
+    <mesh ref={ref} geometry={prepared.geometry} material={prepared.materials} matrixAutoUpdate={false} castShadow>
+      {edges && (
+        <lineSegments geometry={edges} raycast={() => null}>
+          <lineBasicMaterial color="#0b0d12" transparent opacity={0.6} />
+        </lineSegments>
+      )}
+    </mesh>
+  );
 }
 
 /** Normalized mesh shown see-through while placing joints. */

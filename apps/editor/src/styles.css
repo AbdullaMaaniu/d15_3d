@@ -192,3 +192,6 @@ pre.code { margin: 0; background: #0d0f13; border: 1px solid var(--line); border
   .drive-top { top: 8px; right: 8px; }
   .drive-actions { right: 8px; bottom: 8px; }
 }
+
+.seg.wrap { flex-wrap: wrap; }
+.seg.wrap button { flex: 1 0 auto; }

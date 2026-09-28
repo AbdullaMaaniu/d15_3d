@@ -45,3 +45,15 @@ export { quadrupedGaits, type GaitClip, type GaitId } from './anim/gaits';
 export { creatureDefs, autoTails, boneChain, mirrorSubtree, isLeaf, type CreatureBone } from './rig/creature';
 export { rigDocument, type RigDocumentOptions, type RigDocumentReport } from './export/document';
 export { MeshyClient, MeshyError, normalizeTask, type MeshyKind, type MeshyTask } from './meshy';
+export {
+  REMESH_TARGETS,
+  arraysToGeometry,
+  decodeFaceSizes,
+  encodeFaceSizes,
+  geometryToArrays,
+  quadOutputToArrays,
+  remeshTriangles,
+  toOBJ,
+  type MeshArrays,
+  type Topology,
+} from './mesh/remesh';

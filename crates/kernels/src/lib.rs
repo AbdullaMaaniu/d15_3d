@@ -4,6 +4,12 @@
 //! `packages/core/src/voxel/{voxelize,geodesic}.ts` and exposes a tiny C ABI so it
 //! can be loaded as a plain WebAssembly module without any bindgen glue.
 
+pub mod geom;
+pub mod trimesh;
+pub mod quad;
+pub mod atlas;
+pub mod bake;
+
 use std::alloc::{alloc, dealloc, Layout};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -720,6 +726,187 @@ pub extern "C" fn rf_geo_bone(session: *mut GeodesicSession, bone: usize, out: *
 pub extern "C" fn rf_geo_free(session: *mut GeodesicSession) {
     if !session.is_null() {
         drop(unsafe { Box::from_raw(session) });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Remeshing, UV atlas and texture baking.
+// ---------------------------------------------------------------------------
+
+/// A quad remesh result kept alive for JavaScript to read (and to bake onto).
+pub struct QuadResult {
+    mesh: quad::QuadMesh,
+    normals: Vec<geom::V3>,
+    /// Render triangles as corner-index triples (quads split along the shorter diagonal).
+    tri_corners: Vec<[u32; 3]>,
+    uv: Vec<[f32; 2]>,
+    charts: u32,
+}
+
+impl QuadResult {
+    fn new(mesh: quad::QuadMesh) -> Self {
+        use geom::*;
+        let mut normals = vec![[0.0f32; 3]; mesh.v.len()];
+        let mut tri_corners = Vec::with_capacity(mesh.sizes.len() * 2);
+        let mut o = 0u32;
+        for &s in &mesh.sizes {
+            let c: Vec<u32> = (o..o + s as u32).collect();
+            let vtx = |k: usize| mesh.v[mesh.idx[c[k] as usize] as usize];
+            let mut n = [0.0f32; 3];
+            for k in 0..c.len() {
+                n = add(n, cross(vtx(k), vtx((k + 1) % c.len())));
+            }
+            for &k in &c {
+                let vi = mesh.idx[k as usize] as usize;
+                normals[vi] = add(normals[vi], n);
+            }
+            if s == 3 {
+                tri_corners.push([c[0], c[1], c[2]]);
+            } else if len2(sub(vtx(0), vtx(2))) <= len2(sub(vtx(1), vtx(3))) {
+                tri_corners.push([c[0], c[1], c[2]]);
+                tri_corners.push([c[0], c[2], c[3]]);
+            } else {
+                tri_corners.push([c[0], c[1], c[3]]);
+                tri_corners.push([c[1], c[2], c[3]]);
+            }
+            o += s as u32;
+        }
+        for n in normals.iter_mut() {
+            *n = normalize(*n);
+        }
+        // Prefer the input's smooth normals where the remesher computed them.
+        if mesh.n.len() == mesh.v.len() {
+            normals.clone_from(&mesh.n);
+        }
+        let corners = mesh.idx.len();
+        QuadResult { mesh, normals, tri_corners, uv: vec![[0.0; 2]; corners], charts: 0 }
+    }
+}
+
+/// Quad-remeshes a triangle mesh (positions welded internally) to about `target` faces.
+#[no_mangle]
+pub extern "C" fn rf_quad_remesh(pos: *const f32, n_verts: usize, idx: *const u32, n_idx: usize, target: usize, seed: u32) -> *mut QuadResult {
+    let positions = unsafe { std::slice::from_raw_parts(pos, n_verts * 3) };
+    let index = if n_idx > 0 { Some(unsafe { std::slice::from_raw_parts(idx, n_idx) }) } else { None };
+    let tri = trimesh::TriMesh::welded(positions, index);
+    let mesh = quad::quad_remesh(&tri, &quad::QuadOptions { target_faces: target, seed: seed as u64, ..Default::default() });
+    Box::into_raw(Box::new(QuadResult::new(mesh)))
+}
+
+/// Writes [vertices, faces, corners, triangles, charts] as u32.
+#[no_mangle]
+pub extern "C" fn rf_quad_info(r: *const QuadResult, out: *mut u32) {
+    let r = unsafe { &*r };
+    let o = unsafe { std::slice::from_raw_parts_mut(out, 5) };
+    o.copy_from_slice(&[r.mesh.v.len() as u32, r.mesh.sizes.len() as u32, r.mesh.idx.len() as u32, r.tri_corners.len() as u32, r.charts]);
+}
+
+#[no_mangle]
+pub extern "C" fn rf_quad_positions(r: *const QuadResult) -> *const f32 {
+    unsafe { (*r).mesh.v.as_ptr() as *const f32 }
+}
+#[no_mangle]
+pub extern "C" fn rf_quad_normals(r: *const QuadResult) -> *const f32 {
+    unsafe { (*r).normals.as_ptr() as *const f32 }
+}
+#[no_mangle]
+pub extern "C" fn rf_quad_sizes(r: *const QuadResult) -> *const u8 {
+    unsafe { (*r).mesh.sizes.as_ptr() }
+}
+/// Vertex index of every face corner.
+#[no_mangle]
+pub extern "C" fn rf_quad_corners(r: *const QuadResult) -> *const u32 {
+    unsafe { (*r).mesh.idx.as_ptr() }
+}
+/// Render triangles as triples of corner indices.
+#[no_mangle]
+pub extern "C" fn rf_quad_triangles(r: *const QuadResult) -> *const u32 {
+    unsafe { (*r).tri_corners.as_ptr() as *const u32 }
+}
+/// Per-corner UVs (after rf_quad_atlas), v down.
+#[no_mangle]
+pub extern "C" fn rf_quad_uv(r: *const QuadResult) -> *const f32 {
+    unsafe { (*r).uv.as_ptr() as *const f32 }
+}
+
+/// Unwraps the remeshed surface into a `resolution`² atlas. Returns the chart count.
+#[no_mangle]
+pub extern "C" fn rf_quad_atlas(r: *mut QuadResult, resolution: u32, padding: f32) -> u32 {
+    let r = unsafe { &mut *r };
+    let a = atlas::build_atlas(&r.mesh.v, &r.mesh.sizes, &r.mesh.idx, &atlas::AtlasOptions { resolution, padding, max_angle_deg: 55.0 });
+    r.uv = a.uv;
+    r.charts = a.chart_count as u32;
+    r.charts
+}
+
+#[no_mangle]
+pub extern "C" fn rf_quad_free(r: *mut QuadResult) {
+    if !r.is_null() {
+        drop(unsafe { Box::from_raw(r) });
+    }
+}
+
+/// Source surface for baking: positions, UVs, optional RGBA vertex colours (null = none),
+/// triangles and each triangle's material.
+#[no_mangle]
+pub extern "C" fn rf_baker_new(pos: *const f32, n_verts: usize, uv: *const f32, color: *const f32, idx: *const u32, n_idx: usize, material_of: *const u32) -> *mut bake::Baker {
+    let p = unsafe { std::slice::from_raw_parts(pos, n_verts * 3) };
+    let u = unsafe { std::slice::from_raw_parts(uv, n_verts * 2) };
+    let ix = unsafe { std::slice::from_raw_parts(idx, n_idx) };
+    let mats = unsafe { std::slice::from_raw_parts(material_of, n_idx / 3) };
+    let positions: Vec<geom::V3> = p.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+    let uvs: Vec<[f32; 2]> = u.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+    let colors = if color.is_null() {
+        None
+    } else {
+        let c = unsafe { std::slice::from_raw_parts(color, n_verts * 4) };
+        Some(c.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect())
+    };
+    let tris: Vec<[u32; 3]> = ix.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+    Box::into_raw(Box::new(bake::Baker::new(&positions, uvs, colors, tris, mats.to_vec())))
+}
+
+/// Adds an RGBA8 texture (copied). Returns its index.
+#[no_mangle]
+pub extern "C" fn rf_baker_texture(b: *mut bake::Baker, w: u32, h: u32, data: *const u8, flip_y: u32, repeat: u32) -> i32 {
+    let b = unsafe { &mut *b };
+    let d = unsafe { std::slice::from_raw_parts(data, (w * h * 4) as usize) }.to_vec();
+    b.textures.push(bake::Texture { w, h, data: d, flip_y: flip_y != 0, repeat: repeat != 0 });
+    b.textures.len() as i32 - 1
+}
+
+/// Adds a material (texture index -1 = none). Materials are numbered in call order.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn rf_baker_material(b: *mut bake::Baker, base_tex: i32, r: f32, g: f32, bl: f32, a: f32, mr_tex: i32, metallic: f32, roughness: f32, em_tex: i32, er: f32, eg: f32, eb: f32) {
+    let b = unsafe { &mut *b };
+    b.materials.push(bake::Material { base_tex, base: [r, g, bl, a], mr_tex, metallic, roughness, em_tex, emissive: [er, eg, eb] });
+}
+
+/// Bakes onto a remesh result (after rf_quad_atlas). Output buffers are resolution² RGBA8;
+/// `out_mr`/`out_em` may be null. Returns the number of covered texels.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn rf_baker_bake(b: *const bake::Baker, r: *const QuadResult, resolution: u32, padding: u32, out_base: *mut u8, out_mr: *mut u8, out_em: *mut u8) -> u32 {
+    let (b, r) = unsafe { (&*b, &*r) };
+    let res = bake::Baker::bake(b, &r.mesh.v, &r.mesh.idx, &r.uv, &r.tri_corners, resolution, padding, !out_mr.is_null(), !out_em.is_null());
+    let n = (resolution * resolution * 4) as usize;
+    unsafe {
+        std::ptr::copy_nonoverlapping(res.base.as_ptr(), out_base, n);
+        if let Some(m) = res.mr {
+            std::ptr::copy_nonoverlapping(m.as_ptr(), out_mr, n);
+        }
+        if let Some(e) = res.emissive {
+            std::ptr::copy_nonoverlapping(e.as_ptr(), out_em, n);
+        }
+    }
+    res.covered as u32
+}
+
+#[no_mangle]
+pub extern "C" fn rf_baker_free(b: *mut bake::Baker) {
+    if !b.is_null() {
+        drop(unsafe { Box::from_raw(b) });
     }
 }
 

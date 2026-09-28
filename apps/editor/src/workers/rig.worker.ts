@@ -2,6 +2,10 @@ import * as Comlink from 'comlink';
 import {
   computeSkinWeights,
   computeSkinWeightsAsync,
+  remeshTriangles,
+  type MeshArrays,
+  type QuadRemeshInput,
+  type QuadRemeshOutput,
   distancesFromSessions,
   createWasmKernels,
   detectHumanoid,
@@ -63,7 +67,22 @@ function warmPool(): void {
   for (const w of geodesicPool()) void w.warm();
 }
 
+const buffersOf = (...arrays: Array<ArrayBufferView | null | undefined>) => [...new Set(arrays.filter(Boolean).map((a) => a!.buffer as ArrayBuffer))];
+
 const api = {
+  async remeshTriangles(mesh: MeshArrays, target: number): Promise<MeshArrays> {
+    const out = await remeshTriangles(mesh, target);
+    return Comlink.transfer(out, buffersOf(out.positions, out.normals, out.uvs, out.colors, out.index));
+  },
+
+  async remeshQuads(input: QuadRemeshInput): Promise<QuadRemeshOutput> {
+    const k = await kernels();
+    if (!k.quadRemesh) throw new Error('Quad remeshing needs WebAssembly, which this browser blocked.');
+    const out = k.quadRemesh(input);
+    const b = out.baked;
+    return Comlink.transfer(out, buffersOf(out.positions, out.normals, out.sizes, out.corners, out.uvs, out.triangles, b?.base, b?.metallicRoughness, b?.emissive));
+  },
+
   async kernelName(): Promise<string> {
     warmPool();
     return (await kernels()).name;

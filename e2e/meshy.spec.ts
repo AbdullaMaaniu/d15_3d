@@ -32,7 +32,7 @@ test('import a model from Meshy.ai (mocked API)', async ({ page }) => {
   await page.getByLabel('Meshy API key').first().fill('msy_test');
   await page.getByRole('button', { name: 'Show my models' }).first().click();
   await page.getByTitle('a brave knight').first().click();
-  await expect(page.getByText('Triangles')).toBeVisible();
+  await expect(page.locator('.stats').getByText('Triangles')).toBeVisible();
   await expect(page.getByText('a-brave-knight.glb')).toBeVisible();
   expect(auth).toBe('Bearer msy_test');
 });

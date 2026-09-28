@@ -5,6 +5,7 @@
 Drop in a GLB/FBX/OBJ from Meshy (or any humanoid mesh), or import straight from your Meshy.ai account with an API key, and RigForge will:
 
 1. **Clean & orient** it: merges parts, fixes degenerate triangles, stands it upright facing +Z at real-world scale.
+   **Remesh** it to 3k, 10k, 30k, 60k, 100k or 150k faces, as **clean quads** (edge loops that follow the shape, new UVs, textures baked across) or **triangles** (evenly sized, original UVs and textures kept). Quad meshes download as OBJ with the quads intact.
 2. **Auto-rig** it: detects joints (T- or A-pose), including **15 finger bones per hand**, fits a VRM-compatible humanoid skeleton and computes skin weights with **geodesic voxel binding**, which is robust to the open, self-intersecting meshes AI generators produce.
 3. **Animate** it: add 18 motion-capture presets (idle, walk, run, jump, wave, punch, kick, dance…) or retarget your own **Mixamo FBX, BVH or GLB** clips. Clips can loop, play in place, change speed or be mirrored.
 4. **Refine** it: paint skin weights with a brush (add/subtract/smooth, mirrored), trim clips, and keyframe bones with a rotate gizmo, either to fix a retargeted clip or to pose a new one from scratch.
@@ -117,6 +118,8 @@ Exported files are standard glTF 2.0, so plain `GLTFLoader` + `AnimationMixer` w
 - **Joint detection** reads the front silhouette and cross-sections of that volume. It finds the crotch gap, traces each arm from the fingertips to the armpit, finds the neck as the narrowest section below the head, and finds the ankles where the foot's depth drops. Joints are placed on the volume's centerlines.
 - **Fingers**: the hand is sliced across its length at millimeter resolution, and the slices with four separate runs of geometry are the fingers. Knuckles are where the runs merge into the palm, and the thumb is the geometry beyond the palm's edge. Fused "mitten" hands get finger bones placed from hand proportions.
 - **Skin weights**: for every bone, a Dijkstra search through the solid voxels measures the distance *through the body* to each vertex, so the hand resting on a thigh doesn't get thigh weights. Weights fall off as 1/dᵏ, are smoothed over the surface, and are limited to 4 influences. The Rust kernel uses a radix heap over the distances' f32 bit patterns and a border-padded grid with no bounds checks, and the editor splits the bones across a pool of workers. The result is bit-identical to the single-threaded reference.
+- **Quad remeshing** (Rust): a multi-resolution hierarchy of the surface, a smooth 4-way orientation field and a position lattice, optimized coarse to fine (after Instant Field-Aligned Meshes). Graph edges that snap to the same lattice point merge into one vertex, edges one step apart become quad edges, and faces are traced around each vertex. Vertices are then relaxed onto the original surface and take its smooth normals. Parts too small or thin for the lattice (eyes, lenses, straps) keep their triangles.
+- **UVs and baking** (Rust): charts grow under a normal-cone limit, are projected flat, rotated to their tightest rectangle and skyline-packed. Every texel then finds the closest facing point on the original surface through a BVH and samples its material: base colour, metallic-roughness and emissive, merged into one material. Chart borders are dilated so mipmaps don't bleed.
 - **Retargeting** converts every clip to a skeleton-independent "normalized T-pose" space (like VRM), so A-pose meshes, T-pose Mixamo clips and CMU BVH data all line up.
 
 ## Development
@@ -130,6 +133,8 @@ pnpm build:wasm      # rebuild crates/kernels → packages/core/wasm (needs rust
 pnpm build:presets   # rebuild presets from CMU BVH files (downloads to packages/presets/.cache)
 pnpm corpus          # rig every corpus/*.glb and write corpus/report.md
 pnpm tsx scripts/bench/profile.ts models/        # detect + weights timings per stage, WASM vs TypeScript
+pnpm tsx scripts/bench/dump-mesh.ts a.glb a.mesh && \
+  cargo run --release --manifest-path crates/kernels/Cargo.toml --example quadbench -- a.mesh 30000 out.obj   # quad remesh + atlas stats
 pnpm tsx scripts/bench/dump-geodesic.ts a.glb a.bin && \
   cargo run --release --manifest-path crates/kernels/Cargo.toml --example bench -- a.bin   # native kernel, 1/2/4 threads
 ```

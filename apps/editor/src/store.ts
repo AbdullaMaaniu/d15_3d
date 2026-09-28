@@ -71,6 +71,7 @@ import presetPack from '@rigforge/presets/clips.json';
 import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleCreature, loadSampleProp, type LoadedFile } from './lib/loaders';
 import { computeWeights, detectJoints, detectQuadrupedJoints, type WeightSettings } from './lib/rigClient';
 import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
+import { remeshPrepared, type RemeshInfo, type RemeshSettings } from './lib/remesh';
 import { guessController, type ControllerSetup, type SpringChainDef, type SpringColliderDef, type SpringConfig } from '@rigforge/three';
 
 export type Step = 'import' | 'orient' | 'rig' | 'animate' | 'export';
@@ -202,6 +203,13 @@ interface State {
   exportResult: ExportResult | null;
   /** GLB being driven in the test drive (null = editor view). */
   testDrive: Uint8Array | null;
+
+  remeshSettings: RemeshSettings;
+  remeshInfo: RemeshInfo | null;
+  /** The imported mesh before remeshing (to revert). */
+  originalPrepared: PreparedMesh | null;
+  /** Show polygon edges (quads drawn as quads). */
+  wireframe: boolean;
 }
 
 interface Actions {
@@ -263,6 +271,8 @@ interface Actions {
   addSpringChain(startBone: string): void;
   removeSpringChain(index: number): void;
   openProject(blob: Blob): Promise<void>;
+  remesh(): Promise<void>;
+  revertRemesh(): void;
 }
 
 let clipCounter = 0;
@@ -355,6 +365,10 @@ export const useStore = create<State & Actions>()((set, get) => ({
   exportPreset: 'web',
   exportResult: null,
   testDrive: null,
+  remeshSettings: { target: null, topology: 'quads', textureSize: 2048 },
+  remeshInfo: null,
+  originalPrepared: null,
+  wireframe: false,
 
   set: (key, value) => set({ [key]: value } as any),
   setError: (error) => set({ error }),
@@ -1010,6 +1024,30 @@ export const useStore = create<State & Actions>()((set, get) => ({
     }
   },
 
+  async remesh() {
+    const { prepared, originalPrepared, remeshSettings } = get();
+    const source = originalPrepared ?? prepared;
+    if (!source) return;
+    if (remeshSettings.target === null) return get().revertRemesh();
+    set({ busy: 'Remeshing…', progress: 0, error: null });
+    try {
+      const { prepared: next, info } = await remeshPrepared(source, { ...remeshSettings, target: remeshSettings.target }, (stage) => set({ busy: stage }));
+      replacePrepared(next);
+      set({ originalPrepared: source, remeshInfo: info, wireframe: true });
+    } catch (e) {
+      set({ error: `Remesh failed: ${(e as Error).message}` });
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  revertRemesh() {
+    const original = get().originalPrepared;
+    if (!original) return;
+    replacePrepared(original);
+    set({ originalPrepared: null, remeshInfo: null, remeshSettings: { ...get().remeshSettings, target: null } });
+  },
+
   async openProject(blob) {
     // A model picked through "Open" (not a .rigforge project) starts a fresh import instead.
     const name = (blob as File).name ?? '';
@@ -1141,6 +1179,31 @@ function defaultHeight(rigType: RigType): number {
   return rigType === 'humanoid' ? 1.8 : rigType === 'quadruped' ? 0.8 : rigType === 'creature' ? 1 : 1;
 }
 
+/** Swaps in a new mesh for the same model (remesh): everything downstream starts over. */
+function replacePrepared(prepared: PreparedMesh) {
+  const report = analyzeMesh(prepared.geometry, prepared.materials);
+  paintCache = null;
+  useStore.setState({
+    prepared,
+    report,
+    normalized: null,
+    detection: null,
+    joints: null,
+    propSplit: null,
+    propRig: null,
+    extraBones: [],
+    springs: { chains: [], colliders: [] },
+    character: null,
+    binding: null,
+    clips: [],
+    activeClip: null,
+    testClip: null,
+    exportResult: null,
+    unlocked: 1,
+    step: 'import',
+  });
+}
+
 function ingest(file: LoadedFile) {
   const prepared = mergeSceneMeshes(file.scene);
   removeDegenerateTriangles(prepared.geometry);
@@ -1172,6 +1235,10 @@ function ingest(file: LoadedFile) {
     unlocked: 1,
     step: 'import',
     error: null,
+    remeshInfo: null,
+    originalPrepared: null,
+    remeshSettings: { ...useStore.getState().remeshSettings, target: null },
+    wireframe: false,
   });
 }
 
