@@ -18,3 +18,31 @@ const npc = hero.clone();                           // independent skeleton, sha
 // every frame
 hero.update(delta);
 ```
+
+## State machines
+
+```ts
+const sm = hero.stateMachine({
+  initial: 'move',
+  parameters: { speed: 0 },
+  states: {
+    move: { blend: { param: 'speed', clips: [[0, 'Idle'], [1.4, 'Walk'], [4, 'Run']] } }, // phase-synced blend
+    jump: { clip: 'Jump', loop: false },
+  },
+  transitions: [
+    { from: 'move', to: 'jump', when: [{ trigger: 'jump' }] },
+    { from: 'jump', to: 'move', exitTime: 0.9 },
+  ],
+});
+sm.set('speed', velocity.length());
+sm.trigger('jump');
+```
+
+## Layers, root motion and foot IK
+
+```ts
+hero.playLayer('attack', 'Punch', { mask: 'upperBody', loop: false }); // punch while walking
+hero.playLayer('breathe', 'Idle', { additive: true, weight: 0.5 });
+hero.rootMotion = true;                        // clips exported with root motion move hero.object
+hero.enableFootIK({ ground: [terrainMesh] });  // feet follow uneven ground, hips drop to reach
+```

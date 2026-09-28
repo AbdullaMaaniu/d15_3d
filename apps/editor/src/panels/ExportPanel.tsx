@@ -110,7 +110,7 @@ export function ExportPanel() {
 
       <Section title="Use it in three.js">
         <div className="tabs">
-          {([['three', '@rigforge/three'], ['r3f', 'R3F'], ['vanilla', 'Plain three']] as const).map(([k, label]) => (
+          {([['three', 'Runtime'], ['state-machine', 'State machine'], ['r3f', 'R3F'], ['vanilla', 'Plain']] as const).map(([k, label]) => (
             <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{label}</button>
           ))}
         </div>

@@ -64,5 +64,8 @@ describe('export', () => {
     const s = generateSnippet('three', { url: 'hero.glb', clipNames: ['Idle', 'Walk'] });
     expect(s).toContain("character.play('Idle')");
     expect(generateSnippet('r3f', { url: 'hero.glb', clipNames: ['Idle', 'Run'] })).toContain('<Character');
+    const sm = generateSnippet('state-machine', { url: 'hero.glb', clipNames: ['Idle', 'Walk', 'Run', 'Jump'] });
+    expect(sm).toContain("[[0, 'Idle'], [1.4, 'Walk'], [4, 'Run']]");
+    expect(sm).toContain("clip: 'Jump'");
   });
 });

@@ -6,7 +6,7 @@ export interface SnippetInput {
   initial?: string;
 }
 
-export type SnippetKind = 'three' | 'r3f' | 'vanilla';
+export type SnippetKind = 'three' | 'r3f' | 'vanilla' | 'state-machine';
 
 function pickInitial(input: SnippetInput): string {
   return input.initial ?? input.clipNames.find((n) => /idle/i.test(n)) ?? input.clipNames[0] ?? 'Idle';
@@ -40,6 +40,46 @@ window.addEventListener('keydown', (e) => {
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
+  character.update(clock.getDelta());
+  renderer.render(scene, camera);
+});
+`;
+  }
+  if (kind === 'state-machine') {
+    const has = (re: RegExp) => input.clipNames.find((n) => re.test(n));
+    const idle = has(/idle/i) ?? initial;
+    const walk = has(/^walk$/i) ?? has(/walk/i);
+    const run = has(/run/i);
+    const jump = has(/jump/i);
+    const blend = [[0, idle], ...(walk ? [[1.4, walk]] : []), ...(run ? [[4, run]] : [])]
+      .map(([t, n]) => `[${t}, '${n}']`)
+      .join(', ');
+    return `import * as THREE from 'three';
+import { loadCharacter } from '@rigforge/three';
+
+const character = await loadCharacter('${input.url}');
+scene.add(character.object);
+
+// Idle/walk/run blend by speed${jump ? ', plus a jump' : ''}. Clips: ${clips}
+const sm = character.stateMachine({
+  initial: 'move',
+  parameters: { speed: 0 },
+  states: {
+    move: { blend: { param: 'speed', clips: [${blend}] } },${jump ? `
+    jump: { clip: '${jump}', loop: false },` : ''}
+  },
+  transitions: [${jump ? `
+    { from: 'move', to: 'jump', when: [{ trigger: 'jump' }] },
+    { from: 'jump', to: 'move', exitTime: 0.9 },
+  ` : ''}],
+});
+
+// Keep feet on uneven terrain and drive it from your controller:
+character.enableFootIK({ ground: [terrain] });
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  sm.set('speed', player.velocity.length()); // meters per second
+  if (input.jumpPressed) sm.trigger('jump');
   character.update(clock.getDelta());
   renderer.render(scene, camera);
 });
