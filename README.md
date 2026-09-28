@@ -59,6 +59,7 @@ character.play('Run', { fade: 0.25 });         // crossfade
 character.attach('rightHand', sword);           // canonical bone names
 character.lookAt(camera);                       // procedural head tracking
 character.on('finished', ({ name }) => character.play('Idle'));
+character.setColor('Top', '#c0392b');           // parts from the Parts step keep their shading
 
 // Game-ready in one line: uses the controller setup saved in the file.
 const controller = character.autoStateMachine();

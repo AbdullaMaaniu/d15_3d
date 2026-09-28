@@ -90,6 +90,11 @@ function HumanoidRigPanel() {
           <button className="btn" onClick={editJoints}>← Edit joints</button>
           <button className="btn primary" onClick={() => goto('animate')}>Add animations →</button>
         </div>
+        {character?.built && (
+          <div className="link-row">
+            <button className="btn small ghost" onClick={() => goto('parts')}>Optional: split into recolourable parts →</button>
+          </div>
+        )}
       </>
     );
   }

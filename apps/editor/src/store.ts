@@ -67,16 +67,46 @@ import {
   type RiggedCharacter,
   type SkeletonBinding,
   type EncodedClip,
+  applyRegions,
+  autoRegionsByColor,
+  autoRegionsHumanoid,
+  fillPiece,
+  fillSimilar,
+  nearestTriangle,
+  paintRegion,
+  regionAreas,
+  regionBaseColors,
+  removeRegion,
+  triangleBones,
+  HUMANOID_REGIONS,
+  MAX_REGIONS,
+  REGION_PALETTE,
+  type RegionContext,
 } from '@rigforge/core';
 import presetPack from '@rigforge/presets/clips.json';
 import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleCreature, loadSampleProp, type LoadedFile } from './lib/loaders';
 import { computeWeights, detectJoints, detectQuadrupedJoints, type SkeletonKind, type WeightSettings } from './lib/rigClient';
 import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
 import { remeshPrepared, type RemeshInfo, type RemeshSettings } from './lib/remesh';
+import { buildRegionContext, type PartsState } from './lib/parts';
 import { guessController, type ControllerSetup, type SpringChainDef, type SpringColliderDef, type SpringConfig } from '@rigforge/three';
 
-export type Step = 'import' | 'orient' | 'rig' | 'animate' | 'export';
-export const STEPS: Step[] = ['import', 'orient', 'rig', 'animate', 'export'];
+export type Step = 'import' | 'orient' | 'rig' | 'parts' | 'animate' | 'export';
+export const STEPS: Step[] = ['import', 'orient', 'rig', 'parts', 'animate', 'export'];
+/** Every step unlocked (a rigged character). */
+export const ALL_STEPS = STEPS.length - 1;
+
+export type PartsToolMode = 'brush' | 'fill' | 'piece';
+export interface PartsTool {
+  mode: PartsToolMode;
+  /** Region painted with. */
+  region: number;
+  radius: number;
+  /** Colour similarity for the fill tool (Lab units). */
+  tolerance: number;
+  mirror: boolean;
+  view: 'parts' | 'colours';
+}
 export type Shading = 'textured' | 'clay' | 'weights' | 'xray';
 
 export interface ClipEntry {
@@ -201,6 +231,15 @@ interface State {
   weightsVersion: number;
   paintUndo: number;
 
+  /** Recolourable body regions (Parts step); null = one material as imported. */
+  parts: PartsState | null;
+  partsTool: PartsTool;
+  /** Bumped whenever the parts on the mesh change, so views refresh. */
+  partsVersion: number;
+  partsHistory: { undo: number; redo: number };
+  /** Region under the cursor in the Parts step. */
+  hoverPart: number | null;
+
   exportName: string;
   exportPreset: 'web' | 'mobile' | 'lossless';
   exportResult: ExportResult | null;
@@ -235,6 +274,20 @@ interface Actions {
   symmetrize(from: 'left' | 'right'): void;
   setWeightSettings(s: Partial<WeightSettings>): void;
   setArmSpacing(degrees: number): void;
+  detectParts(mode: 'body' | 'colour', count?: number): void;
+  startParts(): void;
+  clearParts(): void;
+  setPartsTool(patch: Partial<PartsTool>): void;
+  beginPartsEdit(): void;
+  partsDab(point: [number, number, number]): void;
+  partsClick(triangle: number, point: [number, number, number]): void;
+  undoParts(): void;
+  redoParts(): void;
+  addPart(): void;
+  renamePart(i: number, name: string): void;
+  removePart(i: number): void;
+  setPartTint(i: number, color: string | null): void;
+  previewPartsMotion(on: boolean): void;
   buildRig(): Promise<void>;
   useExistingRig(): void;
   editJoints(): void;
@@ -372,6 +425,11 @@ export const useStore = create<State & Actions>()((set, get) => ({
   keyEdit: { clipId: null, bone: null, mode: 'rotate', autoKey: true },
   weightsVersion: 0,
   paintUndo: 0,
+  parts: null,
+  partsTool: { mode: 'brush', region: 0, radius: 0.04, tolerance: 12, mirror: true, view: 'parts' },
+  partsVersion: 0,
+  partsHistory: { undo: 0, redo: 0 },
+  hoverPart: null,
   exportName: 'character',
   exportPreset: 'web',
   exportResult: null,
@@ -388,7 +446,10 @@ export const useStore = create<State & Actions>()((set, get) => ({
 
   goto(step) {
     const i = STEPS.indexOf(step);
-    if (i <= get().unlocked) set({ step, paint: { ...get().paint, active: false }, keyEdit: { ...get().keyEdit, clipId: null } });
+    if (i > get().unlocked) return;
+    set({ step, paint: { ...get().paint, active: false }, keyEdit: { ...get().keyEdit, clipId: null } });
+    // Parts are painted in the bind pose, where the brush lines up with the mesh.
+    if (step === 'parts') get().previewPartsMotion(false);
   },
 
   async loadFromFiles(files) {
@@ -537,6 +598,155 @@ export const useStore = create<State & Actions>()((set, get) => ({
   },
 
   setWeightSettings: (s) => set({ weightSettings: { ...get().weightSettings, ...s } }),
+  detectParts(mode, count = 5) {
+    const pc = partsContext();
+    if (!pc) return;
+    pushPartsUndo();
+    const { mesh, ctx } = pc;
+    let set_: { defs: typeof HUMANOID_REGIONS; faces: Uint8Array };
+    if (mode === 'body') {
+      const names = mesh.skeleton.bones.map((b) => b.name);
+      const orig = mesh.userData.rfOriginal as { index: Uint32Array } | undefined;
+      const index = orig?.index ?? (mesh.geometry.index!.array as ArrayLike<number>);
+      const bones = triangleBones(index, mesh.geometry.attributes.skinIndex.array as ArrayLike<number>, mesh.geometry.attributes.skinWeight.array as ArrayLike<number>, names);
+      set_ = autoRegionsHumanoid(ctx, bones);
+    } else {
+      set_ = autoRegionsByColor(ctx, count);
+    }
+    set({ parts: { defs: set_.defs, faces: set_.faces, tints: set_.defs.map(() => null) }, partsTool: { ...get().partsTool, region: 0 } });
+    applyParts();
+  },
+
+  startParts() {
+    const pc = partsContext();
+    if (!pc) return;
+    pushPartsUndo();
+    set({ parts: { defs: [{ name: 'Body', color: REGION_PALETTE[0] }], faces: new Uint8Array(pc.ctx.triCount), tints: [null] }, partsTool: { ...get().partsTool, region: 0 } });
+    applyParts();
+  },
+
+  clearParts() {
+    if (!get().parts) return;
+    pushPartsUndo();
+    set({ parts: null });
+    applyParts();
+  },
+
+  setPartsTool(patch) {
+    set({ partsTool: { ...get().partsTool, ...patch } });
+  },
+
+  beginPartsEdit() {
+    pushPartsUndo();
+  },
+
+  partsDab(point) {
+    const pc = partsContext();
+    const parts = get().parts;
+    if (!pc || !parts) return;
+    const { radius, region, mirror } = get().partsTool;
+    const set_ = { defs: parts.defs, faces: parts.faces };
+    let n = paintRegion(set_, pc.ctx, point, radius, region);
+    if (mirror) {
+      const cx = get().detection?.measurements.centerX ?? 0;
+      const mp = [2 * cx - point[0], point[1], point[2]];
+      if (Math.abs(mp[0] - point[0]) > radius * 0.5) n += paintRegion(set_, pc.ctx, mp, radius, region);
+    }
+    if (n) applyParts();
+  },
+
+  partsClick(triangle, point) {
+    const pc = partsContext();
+    const parts = get().parts;
+    if (!pc || !parts) return;
+    const { mode, region, mirror, tolerance } = get().partsTool;
+    const set_ = { defs: parts.defs, faces: parts.faces };
+    const run = (t: number) => (mode === 'piece' ? fillPiece(set_, pc.ctx, t, region) : fillSimilar(set_, pc.ctx, t, region, tolerance));
+    let n = run(triangle);
+    if (mirror) {
+      const cx = get().detection?.measurements.centerX ?? 0;
+      const mp = [2 * cx - point[0], point[1], point[2]];
+      if (Math.abs(mp[0] - point[0]) > 0.01) n += run(nearestTriangle(pc.ctx, mp));
+    }
+    if (n) applyParts();
+  },
+
+  undoParts() {
+    const prev = partsUndo.pop();
+    if (prev === undefined) return;
+    partsRedo.push(snapshotParts(get().parts));
+    set({ parts: prev });
+    applyParts();
+  },
+
+  redoParts() {
+    const next = partsRedo.pop();
+    if (next === undefined) return;
+    partsUndo.push(snapshotParts(get().parts));
+    set({ parts: next });
+    applyParts();
+  },
+
+  addPart() {
+    const parts = get().parts;
+    if (!parts || parts.defs.length >= MAX_REGIONS) return;
+    pushPartsUndo();
+    const used = new Set(parts.defs.map((d) => d.color));
+    const color = REGION_PALETTE.find((c) => !used.has(c)) ?? REGION_PALETTE[parts.defs.length % REGION_PALETTE.length];
+    const names = new Set(parts.defs.map((d) => d.name));
+    let n = parts.defs.length + 1;
+    while (names.has(`Part ${n}`)) n++;
+    set({
+      parts: { ...parts, defs: [...parts.defs, { name: `Part ${n}`, color }], tints: [...parts.tints, null] },
+      partsTool: { ...get().partsTool, region: parts.defs.length },
+    });
+    applyParts();
+  },
+
+  renamePart(i, name) {
+    const parts = get().parts;
+    if (!parts || !parts.defs[i]) return;
+    const clean = name.replace(/\s+/g, ' ').slice(0, 32);
+    set({ parts: { ...parts, defs: parts.defs.map((d, k) => (k === i ? { ...d, name: clean } : d)) } });
+    applyParts();
+  },
+
+  removePart(i) {
+    const parts = get().parts;
+    if (!parts || parts.defs.length < 2) return;
+    pushPartsUndo();
+    // Its triangles join the region listed before it (or after, for the first).
+    const into = i > 0 ? i - 1 : 1;
+    const next = removeRegion({ defs: parts.defs, faces: parts.faces }, i, into);
+    const tool = get().partsTool;
+    set({
+      parts: { defs: next.defs, faces: next.faces, tints: parts.tints.filter((_, k) => k !== i) },
+      partsTool: { ...tool, region: Math.min(tool.region > i ? tool.region - 1 : tool.region, next.defs.length - 1) },
+    });
+    applyParts();
+  },
+
+  setPartTint(i, color) {
+    const parts = get().parts;
+    if (!parts) return;
+    set({ parts: { ...parts, tints: parts.tints.map((t, k) => (k === i ? color : t)) }, partsTool: { ...get().partsTool, view: 'colours' } });
+  },
+
+  previewPartsMotion(on) {
+    if (on) {
+      const rt = get().rigType;
+      if (rt === 'humanoid' || rt === 'quadruped') get().setTestClip('walk');
+      else {
+        const first = get().clips[0];
+        if (first) set({ activeClip: first.id });
+      }
+      set({ playing: true });
+      return;
+    }
+    set({ playing: false, testClip: null });
+    get().character?.root.traverse((o: any) => o.isSkinnedMesh && o.skeleton.pose());
+  },
+
   setArmSpacing(degrees) {
     set({ armSpacing: degrees });
     const binding = get().binding;
@@ -571,7 +781,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
         binding,
         kernel,
         rigTimings: { ...w.timings, total: performance.now() - t0 },
-        unlocked: Math.max(get().unlocked, 4),
+        unlocked: ALL_STEPS,
         shading: 'textured',
       });
       rebakeAll();
@@ -594,7 +804,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
     }
     const binding = bindSkeleton(file.scene, map);
     setArmSpacing(binding, get().armSpacing);
-    set({ character: { root: file.scene, built: null }, binding, unlocked: 4, step: 'animate', joints: null, detection: null });
+    set({ character: { root: file.scene, built: null }, binding, unlocked: ALL_STEPS, step: 'animate', joints: null, detection: null });
     // Keep the file's own clips.
     const entries: ClipEntry[] = [];
     for (const clip of file.animations) {
@@ -878,7 +1088,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
     const { normalized, propSplit, propRig } = get();
     if (!normalized || !propSplit || !propRig) return;
     const built = buildPropCharacter(normalized.geometry, normalized.materials, propSplit, propRig, 'Prop');
-    set({ character: { root: built.root, built }, binding: null, unlocked: 4, step: 'animate', shading: 'textured' });
+    set({ character: { root: built.root, built }, binding: null, unlocked: ALL_STEPS, step: 'animate', shading: 'textured' });
     // Keep clips from a previous build; drop keys for bones that no longer exist.
     const names = new Set(propRig.bones.map((b) => b.name));
     set({
@@ -1116,6 +1326,73 @@ function paintContext(): { mesh: SkinnedMesh; ctx: PaintContext } | null {
   return paintCache;
 }
 
+// Parts: triangle colours/adjacency for the current character, and undo history.
+let partsCache: { mesh: SkinnedMesh; ctx: RegionContext } | null = null;
+const partsUndo: Array<PartsState | null> = [];
+const partsRedo: Array<PartsState | null> = [];
+
+function partsContext(): { mesh: SkinnedMesh; ctx: RegionContext } | null {
+  const built = useStore.getState().character?.built;
+  if (!built) return null;
+  if (partsCache?.mesh !== built.mesh) partsCache = { mesh: built.mesh, ctx: buildRegionContext(built.mesh) };
+  return partsCache;
+}
+
+function snapshotParts(p: PartsState | null): PartsState | null {
+  return p && { defs: p.defs.map((d) => ({ ...d })), faces: p.faces.slice(), tints: [...p.tints] };
+}
+
+function pushPartsUndo() {
+  partsUndo.push(snapshotParts(useStore.getState().parts));
+  if (partsUndo.length > 40) partsUndo.shift();
+  partsRedo.length = 0;
+  useStore.setState({ partsHistory: { undo: partsUndo.length, redo: 0 } });
+}
+
+function resetPartsHistory() {
+  partsUndo.length = 0;
+  partsRedo.length = 0;
+  partsCache = null;
+  useStore.setState({ partsHistory: { undo: 0, redo: 0 } });
+}
+
+/** Share of the surface and average texture colour of each part (for the Parts panel). */
+export function partsSummary(): { shares: number[]; baseColors: string[] } | null {
+  const { parts } = useStore.getState();
+  const pc = partsContext();
+  if (!parts || !pc || parts.faces.length !== pc.ctx.triCount) return null;
+  const set = { defs: parts.defs, faces: parts.faces };
+  return { shares: regionAreas(set, pc.ctx).map((a) => a / pc.ctx.totalArea), baseColors: regionBaseColors(set, pc.ctx) };
+}
+
+/** Puts the current parts on the character's mesh (named materials per region). */
+function applyParts() {
+  const { parts, character } = useStore.getState();
+  const mesh = character?.built?.mesh;
+  if (mesh) {
+    const pc = partsContext();
+    if (parts && pc && parts.faces.length === pc.ctx.triCount) {
+      applyRegions(mesh, { defs: parts.defs, faces: parts.faces }, regionBaseColors({ defs: parts.defs, faces: parts.faces }, pc.ctx));
+    } else applyRegions(mesh, null);
+  }
+  useStore.setState({ partsVersion: useStore.getState().partsVersion + 1, partsHistory: { undo: partsUndo.length, redo: partsRedo.length }, exportResult: null });
+}
+
+// A rebuilt character (new weights, reopened project) gets the parts again; they
+// survive as long as the triangles are the same.
+useStore.subscribe((s, prev) => {
+  if (s.character === prev.character) return;
+  partsCache = null;
+  const mesh = s.character?.built?.mesh;
+  if (!mesh || !s.parts) return;
+  const T = ((mesh.userData.rfOriginal as { index: Uint32Array } | undefined)?.index.length ?? mesh.geometry.index!.count) / 3;
+  if (s.parts.faces.length !== T) {
+    useStore.setState({ parts: null, error: 'The mesh changed, so its parts were cleared. Detect them again in the Parts step.' });
+    return;
+  }
+  applyParts();
+});
+
 function arrays(geometry: BufferGeometry) {
   const positions = new Float32Array(geometry.attributes.position.array as ArrayLike<number>);
   const index = geometry.index
@@ -1216,7 +1493,9 @@ export function rigInputs() {
 function replacePrepared(prepared: PreparedMesh) {
   const report = analyzeMesh(prepared.geometry, prepared.materials);
   paintCache = null;
+  resetPartsHistory();
   useStore.setState({
+    parts: null,
     prepared,
     report,
     normalized: null,
@@ -1244,7 +1523,9 @@ function ingest(file: LoadedFile) {
   const rigType = useStore.getState().rigType;
   const guess = orientationFor(rigType, prepared.geometry);
   const existingRig = hasSkeleton(file.scene);
+  resetPartsHistory();
   useStore.setState({
+    parts: null,
     file,
     prepared,
     report,
@@ -1294,7 +1575,8 @@ let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
 useStore.subscribe((s, prev) => {
   const changed =
     s.prepared !== prev.prepared || s.joints !== prev.joints || s.character !== prev.character || s.clips !== prev.clips ||
-    s.weightsVersion !== prev.weightsVersion || s.rotation !== prev.rotation || s.height !== prev.height || s.exportName !== prev.exportName;
+    s.weightsVersion !== prev.weightsVersion || s.rotation !== prev.rotation || s.height !== prev.height || s.exportName !== prev.exportName ||
+    s.partsVersion !== prev.partsVersion || s.parts !== prev.parts;
   if (!changed || canSave(s)) return;
   if (autosaveTimer) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(async () => {

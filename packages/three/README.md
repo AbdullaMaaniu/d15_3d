@@ -19,6 +19,18 @@ const npc = hero.clone();                           // independent skeleton, sha
 hero.update(delta);
 ```
 
+## Recolouring parts
+
+Characters split into parts in RigForge's Parts step (hair, skin, top, …) export one named material per part. Recolour them at runtime; the texture's folds, stripes and shading are kept, and dark parts can go light:
+
+```ts
+hero.regions;                        // ['Hair', 'Skin', 'Top', 'Bottoms', 'Shoes']
+hero.setColor('Hair', '#e8c36a');    // case-insensitive; returns false if there's no such part
+hero.setColor('Hair', null);         // back to the texture's colour
+```
+
+Each character gets its own materials on first use, so clones from the same file can wear different colours. Without the `Character` class, use `setRegionColor(object, 'Top', color)` and `listRegions(object)`. Other engines see ordinary named materials and can tint them with their own colour multiplier.
+
 ## State machines
 
 ```ts

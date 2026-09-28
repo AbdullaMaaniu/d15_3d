@@ -46,7 +46,7 @@ export interface RemeshInfo {
 }
 
 /** RGBA8 pixels of a texture's image (drawn through a canvas when needed). */
-function pixels(tex: Texture): BakeTexture | null {
+export function pixels(tex: Texture): BakeTexture | null {
   const img = tex.image as (CanvasImageSource & { width: number; height: number; data?: ArrayLike<number> }) | undefined;
   if (!img || !img.width || !img.height) return null;
   const { width, height } = img;
@@ -97,6 +97,33 @@ function bakeSource(prepared: PreparedMesh, src: MeshArrays): { source: BakeSour
   });
   const materialOfTriangle = new Uint32Array(src.index.length / 3);
   for (const g of src.groups) materialOfTriangle.fill(g.materialIndex, g.start / 3, (g.start + g.count) / 3);
+  // Compressed files often store UVs scaled down with KHR_texture_transform; the baker
+  // samples plain UVs, so apply each material's base-colour texture transform first.
+  let uvs = src.uvs;
+  if (uvs) {
+    const done = new Uint8Array(uvs.length / 2);
+    let out: Float32Array | null = null;
+    mats.forEach((m, mi) => {
+      const map = m.map;
+      if (!map) return;
+      map.updateMatrix();
+      const e = map.matrix.elements;
+      if (e[0] === 1 && e[1] === 0 && e[3] === 0 && e[4] === 1 && e[6] === 0 && e[7] === 0) return;
+      out ??= Float32Array.from(src.uvs!);
+      for (let t = 0; t < materialOfTriangle.length; t++) {
+        if (materialOfTriangle[t] !== mi) continue;
+        for (let k = 0; k < 3; k++) {
+          const v = src.index[t * 3 + k];
+          if (done[v]) continue;
+          done[v] = 1;
+          const u0 = src.uvs![v * 2], v0 = src.uvs![v * 2 + 1];
+          out[v * 2] = e[0] * u0 + e[3] * v0 + e[6];
+          out[v * 2 + 1] = e[1] * u0 + e[4] * v0 + e[7];
+        }
+      }
+    });
+    if (out) uvs = out;
+  }
   const vertexColors = mats.some((m) => m.vertexColors) && src.colors;
   let colors: Float32Array | null = null;
   if (vertexColors && src.colors) {
@@ -109,7 +136,7 @@ function bakeSource(prepared: PreparedMesh, src: MeshArrays): { source: BakeSour
   const anything = textures.length > 0 || colors || mats.length > 1 || metallicRoughness || emissive;
   if (!anything) return { source: null, dropped: [...dropped] };
   return {
-    source: { positions: src.positions, uvs: src.uvs, colors, index: src.index, materialOfTriangle, textures, materials, metallicRoughness, emissive },
+    source: { positions: src.positions, uvs, colors, index: src.index, materialOfTriangle, textures, materials, metallicRoughness, emissive },
     dropped: [...dropped],
   };
 }
