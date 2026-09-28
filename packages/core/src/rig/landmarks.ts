@@ -352,21 +352,26 @@ export function detectHumanoid(positions: Float32Array, index: Uint32Array | nul
       if (f.method === 'template') notes.push(`Could not see separate fingers on the ${n} hand; finger bones were placed from hand proportions.`);
     }
     // On a symmetric body the hands should agree. A hand whose knuckles make it point
-    // away from its forearm would be twisted at the wrist by every animation, so when
-    // one hand is clearly off and the other isn't, mirror the good one.
+    // away from its forearm, or whose knuckle line is misread (fingers would curl
+    // sideways), animates wrongly, so when the hands disagree mirror the better one.
     const armsSymmetric = ['UpperArm', 'LowerArm', 'Hand'].every((b) => {
       const l = joints[`left${b}`], r = joints[`right${b}`];
-      return Math.hypot(l[0] - x0 + (r[0] - x0), l[1] - r[1], l[2] - r[2]) < 0.02 * H;
+      return Math.hypot(l[0] - x0 + (r[0] - x0), l[1] - r[1], l[2] - r[2]) < 0.05 * H;
     });
-    const deviation = (side: 'left' | 'right') => {
-      const fore = normalize(sub(joints[`${side}Hand`], joints[`${side}LowerArm`]));
-      const hand = normalize(sub(joints[`${side}MiddleProximal`], joints[`${side}Hand`]));
-      return (Math.acos(Math.max(-1, Math.min(1, fore[0] * hand[0] + fore[1] * hand[1] + fore[2] * hand[2]))) * 180) / Math.PI;
-    };
-    if (armsSymmetric && joints.leftMiddleProximal && joints.rightMiddleProximal) {
-      const dl = deviation('left'), dr = deviation('right');
-      if (Math.max(dl, dr) > 15 && Math.abs(dl - dr) > 10) {
-        const good = dl < dr ? 'left' : 'right';
+    const angle = (u: V3, v: V3) => (Math.acos(Math.max(-1, Math.min(1, dot(normalize(u), normalize(v))))) * 180) / Math.PI;
+    const handDir = (side: 'left' | 'right') => sub(joints[`${side}MiddleProximal`], joints[`${side}Hand`]);
+    const knuckles = (side: 'left' | 'right') => sub(joints[`${side}LittleProximal`], joints[`${side}IndexProximal`]);
+    const deviation = (side: 'left' | 'right') => angle(sub(joints[`${side}Hand`], joints[`${side}LowerArm`]), handDir(side));
+    // How far off a well-formed hand: pointing along the forearm, knuckles across it.
+    const badness = (side: 'left' | 'right') =>
+      deviation(side) + Math.abs(90 - angle(knuckles(side), handDir(side))) + (fingers![side].method === 'template' ? 10 : 0);
+    const handKeys = ['MiddleProximal', 'IndexProximal', 'LittleProximal'];
+    if (armsSymmetric && handKeys.every((k) => joints[`left${k}`] && joints[`right${k}`])) {
+      const flip = (v: V3): V3 => [-v[0], v[1], v[2]];
+      const disagree = Math.abs(deviation('left') - deviation('right')) > 10 || angle(flip(knuckles('left')), knuckles('right')) > 35;
+      const bl = badness('left'), br = badness('right');
+      if (disagree && Math.abs(bl - br) > 10) {
+        const good = bl < br ? 'left' : 'right';
         const bad = good === 'left' ? 'right' : 'left';
         const gw = joints[`${good}Hand`], bw = joints[`${bad}Hand`];
         for (const src of [joints, tails]) {
@@ -439,6 +444,7 @@ export function sub(a: V3, b: V3): V3 { return [a[0] - b[0], a[1] - b[1], a[2] -
 export function add(a: V3, b: V3): V3 { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
 export function scale(a: V3, s: number): V3 { return [a[0] * s, a[1] * s, a[2] * s]; }
 export function length(a: V3): number { return Math.hypot(a[0], a[1], a[2]); }
+export function dot(a: V3, b: V3): number { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 export function normalize(a: V3): V3 { const l = length(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
 export function polylineLength(pts: V3[]): number {
   let l = 0;

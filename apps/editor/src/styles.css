@@ -203,6 +203,11 @@ pre.code { margin: 0; background: #0d0f13; border: 1px solid var(--line); border
 .rig-preview header select { width: auto; padding: 3px 6px; font-size: 12px; }
 .rig-preview-view { position: relative; flex: 1; min-height: 0; }
 .rig-preview-status { position: absolute; left: 10px; bottom: 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
+.rig-preview footer { padding: 6px 10px 8px; border-top: 1px solid var(--line); }
+.arm-spacing .muted { opacity: 0.8; }
+.arm-spacing-slider { flex-wrap: nowrap; }
+.arm-spacing-slider input { flex: 1; min-width: 0; }
+.arm-spacing-slider small { font-size: 11px; }
 .rig-preview-open { position: absolute; top: 16px; right: 16px; z-index: 2; cursor: pointer; color: var(--text); }
 @media (max-width: 860px) {
   .rig-preview { top: 8px; right: 8px; width: 46%; height: 55%; }

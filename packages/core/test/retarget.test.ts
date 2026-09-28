@@ -116,8 +116,8 @@ describe('retargeting', () => {
     expect(bulky.left).toBeGreaterThan(slim.left + 0.05);
 
     // Baked hanging arms keep at least the clearance; without it the idle clip goes closer.
-    setArmSpacing(binding, 25 - (binding.autoArmClearance.left * 180) / Math.PI);
-    const need = binding.armClearance.left;
+    const need = (25 * Math.PI) / 180;
+    binding.armClearance = { left: need, right: need };
     const idle = decodeClip(pack.clips.find((p) => p.id === 'idle')!);
     const chest = c.bones.upperChest ?? c.bones.chest;
     const minAngle = (clearBody: boolean) => {
@@ -140,6 +140,13 @@ describe('retargeting', () => {
     };
     expect(minAngle(false)).toBeLessThan(need - 0.05);
     expect(minAngle(true)).toBeGreaterThan(need - 0.03);
+    // The spacing offset moves hanging arms out or in from there.
+    setArmSpacing(binding, 10);
+    binding.armClearance = { left: need, right: need };
+    expect(minAngle(true)).toBeGreaterThan(need + 0.17 - 0.03);
+    setArmSpacing(binding, -10);
+    binding.armClearance = { left: need, right: need };
+    expect(minAngle(true)).toBeLessThan(need - 0.1);
   });
 
   it('animates the skinned character', async () => {

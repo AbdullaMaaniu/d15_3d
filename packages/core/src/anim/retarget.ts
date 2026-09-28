@@ -50,20 +50,16 @@ export interface SkeletonBinding {
   relaxedFingers: Map<string, Quaternion>;
   /** Clearance measured from the mesh (radians from straight down, per side). */
   autoArmClearance: ArmClearance;
-  /**
-   * Hanging arms are swung out to at least this angle so they stay outside the body.
-   * Starts as autoArmClearance; see setArmSpacing.
-   */
+  /** Hanging arms are swung out to at least this angle so they stay outside the body. */
   armClearance: ArmClearance;
+  /** Extra swing (radians) for hanging arms: positive moves them away from the body, negative closer. */
+  armOffset: number;
 }
 
-/** Adjusts the arm clearance by `degrees` on top of the measured value (negative brings arms in). */
+/** Moves hanging arms `degrees` further from the body (negative: closer), on top of the measured clearance. */
 export function setArmSpacing(binding: SkeletonBinding, degrees: number): void {
-  const d = (degrees * Math.PI) / 180;
-  binding.armClearance = {
-    left: Math.max(0, binding.autoArmClearance.left + d),
-    right: Math.max(0, binding.autoArmClearance.right + d),
-  };
+  binding.armClearance = { ...binding.autoArmClearance };
+  binding.armOffset = (degrees * Math.PI) / 180;
 }
 
 // Curl per segment (proximal, intermediate, distal), in degrees: more toward the little finger.
@@ -115,7 +111,9 @@ export function bindSkeleton(root: Object3D, map: BoneMap): SkeletonBinding {
 
   // Relaxed fingers curl toward the palm. The palm side follows from the knuckle line
   // (index -> little) and handedness, so it works whichever way the palms face.
-  const relaxedFingers = new Map<string, Quaternion>();
+  // A misread knuckle line would curl the fingers sideways, so a palm far from the
+  // usual "facing down" in the T-pose borrows the other hand's (mirrored), or that.
+  const palms: Partial<Record<'left' | 'right', Vector3>> = {};
   for (const side of ['left', 'right'] as const) {
     const hand = node(`${side}Hand`), index = node(`${side}IndexProximal`), little = node(`${side}LittleProximal`);
     const handCorr = correction.get(`${side}Hand`);
@@ -126,7 +124,16 @@ export function bindSkeleton(root: Object3D, map: BoneMap): SkeletonBinding {
     if (knuckles.lengthSq() < 1e-12) continue;
     knuckles.normalize();
     // Left hand: palm = -(finger x knuckle line); right hand: +(finger x knuckle line).
-    const palm = new Vector3().crossVectors(a, knuckles).multiplyScalar(side === 'left' ? -1 : 1);
+    palms[side] = new Vector3().crossVectors(a, knuckles).multiplyScalar(side === 'left' ? -1 : 1);
+  }
+  const down = new Vector3(0, -1, 0);
+  const plausible = (p: Vector3 | undefined) => !!p && p.dot(down) > 0.5;
+  const relaxedFingers = new Map<string, Quaternion>();
+  for (const side of ['left', 'right'] as const) {
+    if (!palms[side]) continue;
+    const other = palms[side === 'left' ? 'right' : 'left'];
+    const palm = plausible(palms[side]) ? palms[side]! : plausible(other) ? new Vector3(-other!.x, other!.y, other!.z) : down;
+    const a = new Vector3(side === 'left' ? 1 : -1, 0, 0);
     const axis = new Vector3().crossVectors(a, palm).normalize();
     for (const [finger, angles] of Object.entries(RELAXED_CURL)) {
       ['Proximal', 'Intermediate', 'Distal'].forEach((segment, k) => {
@@ -147,7 +154,7 @@ export function bindSkeleton(root: Object3D, map: BoneMap): SkeletonBinding {
   if (!Number.isFinite(ground)) ground = 0;
   const hipsHeight = Math.max(1e-6, restHipsWorld.y - ground);
   const autoArmClearance = measureArmClearance(root, map);
-  return { root, map, tpose, restHipsWorld, hipsHeight, restPose, relaxedFingers, autoArmClearance, armClearance: { ...autoArmClearance } };
+  return { root, map, tpose, restHipsWorld, hipsHeight, restPose, relaxedFingers, autoArmClearance, armClearance: { ...autoArmClearance }, armOffset: 0 };
 }
 
 /** Samples any three.js animation on a mapped skeleton into a NormalizedClip. */
@@ -246,12 +253,12 @@ const _swing = new Quaternion();
 
 /**
  * Swings a hanging upper arm (normalized world rotation `w`, updated in place) out
- * sideways until it keeps the binding's clearance from the body. Arms that are
- * already out, or raised, are left alone; the push fades in as the arm points down.
+ * sideways until it keeps the binding's clearance from the body, then by the user's
+ * offset. Arms that are raised are left alone; the effect fades in as the arm points down.
  */
 function clearBody(binding: SkeletonBinding, worldN: Map<string, Quaternion>, side: 'left' | 'right', w: Quaternion): void {
   const need = binding.armClearance[side];
-  if (!(need > 0)) return;
+  if (!(need > 0) && !binding.armOffset) return;
   const s = side === 'left' ? 1 : -1;
   const chest = worldN.get(canonicalParent(`${side}Shoulder`)!)!;
   _up.set(0, 1, 0).applyQuaternion(chest);
@@ -259,8 +266,8 @@ function clearBody(binding: SkeletonBinding, worldN: Map<string, Quaternion>, si
   _dir.set(s, 0, 0).applyQuaternion(w);
   const down = -_dir.dot(_up);
   if (down <= 0) return;
-  const delta = need - Math.atan2(_dir.dot(_lat), down);
-  if (delta <= 0) return;
+  const delta = Math.max(0, need - Math.atan2(_dir.dot(_lat), down)) + binding.armOffset;
+  if (!delta) return;
   const t = Math.min(1, down / 0.5);
   _axis.crossVectors(_lat, _up).normalize();
   w.premultiply(_swing.setFromAxisAngle(_axis, delta * t * t * (3 - 2 * t)));
