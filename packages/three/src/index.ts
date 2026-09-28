@@ -17,10 +17,12 @@ import {
 import { AnimationStateMachine, controllerStateMachine, guessController, type ControllerSetup, type StateMachineDef } from './stateMachine';
 import { FootIK, type FootIKOptions } from './ik';
 import { SpringBones, type SpringConfig } from './springs';
+import { listRegions, setRegionColor } from './recolor';
 
 export { SpringBones, type SpringConfig, type SpringChainDef, type SpringColliderDef } from './springs';
 
 export * from './stateMachine';
+export { listRegions, setRegionColor, setMaterialColor, enableRecolor, regionOf, type RegionInfo } from './recolor';
 export { FootIK, solveTwoBoneIK, raycastGround, rotateBoneWorld, type FootIKOptions, type GroundQuery, type Leg } from './ik';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
@@ -176,6 +178,20 @@ export class Character {
 
   get clipNames(): string[] {
     return this.clips.map((c) => c.name);
+  }
+
+  /** Recolourable body regions set up in RigForge's Parts step (e.g. "Hair", "Skin", "Top"). */
+  get regions(): string[] {
+    return listRegions(this.object).map((r) => r.name);
+  }
+
+  /**
+   * Recolours a region, keeping the texture's shading and detail
+   * (`character.setColor('Top', '#c0392b')`); `null` restores the original.
+   * Returns false if the character has no such region.
+   */
+  setColor(region: string, color: import('three').ColorRepresentation | null): boolean {
+    return setRegionColor(this.object, region, color);
   }
 
   /** Plays (crossfading into) the named clip. Returns the action, or null if missing. Stops any state machine. */

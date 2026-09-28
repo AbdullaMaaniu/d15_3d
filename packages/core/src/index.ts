@@ -13,6 +13,30 @@ export { detectHumanoid, symmetrizeJoints, type DetectOptions, type DetectResult
 export { detectFingers, type FingerDetection } from './rig/fingers';
 export { computeSkinWeights, computeSkinWeightsAsync, boneSegments, type SkinWeights, type WeightOptions } from './rig/weights';
 export { buildSkinnedCharacter, resetPose, type RiggedCharacter } from './rig/build';
+export {
+  HUMANOID_REGIONS,
+  REGION_PALETTE,
+  MAX_REGIONS,
+  regionContext,
+  triangleBones,
+  autoRegionsHumanoid,
+  autoRegionsByColor,
+  cleanRegions,
+  regionAreas,
+  paintRegion,
+  fillSimilar,
+  fillPiece,
+  nearestTriangle,
+  removeRegion,
+  regionBaseColors,
+  applyRegions,
+  readRegions,
+  type RegionDef,
+  type RegionSet,
+  type RegionContext,
+  type SampledTexture,
+  type TriangleSource,
+} from './rig/regions';
 
 export { autoMapBones, normalizeBoneName, type BoneMap, type BoneMapResult } from './anim/bonemap';
 export {

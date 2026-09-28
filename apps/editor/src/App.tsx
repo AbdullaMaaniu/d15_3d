@@ -10,10 +10,11 @@ import { RestoreBanner } from './components/RestoreBanner';
 import { DropZone, ImportPanel } from './panels/ImportPanel';
 import { OrientPanel } from './panels/OrientPanel';
 import { RigPanel, ShadingToolbar } from './panels/RigPanel';
+import { PartsPanel } from './panels/PartsPanel';
 import { AnimatePanel } from './panels/AnimatePanel';
 import { ExportPanel } from './panels/ExportPanel';
 
-const LABELS: Record<Step, string> = { import: 'Import', orient: 'Orient', rig: 'Rig', animate: 'Animate', export: 'Export' };
+const LABELS: Record<Step, string> = { import: 'Import', orient: 'Orient', rig: 'Rig', parts: 'Parts', animate: 'Animate', export: 'Export' };
 
 export function App() {
   const step = useStore((s) => s.step);
@@ -95,6 +96,7 @@ export function App() {
           {step === 'import' && <ImportPanel />}
           {step === 'orient' && <OrientPanel />}
           {step === 'rig' && <RigPanel />}
+          {step === 'parts' && <PartsPanel />}
           {step === 'animate' && <AnimatePanel />}
           {step === 'export' && <ExportPanel />}
         </aside>
@@ -116,16 +118,27 @@ export function App() {
               </div>
             </div>
           )}
-          {character && !driving && step !== 'import' && step !== 'orient' && <ShadingToolbar />}
+          {character && !driving && step !== 'import' && step !== 'orient' && step !== 'parts' && <ShadingToolbar />}
           {character && !driving && (step === 'animate' || step === 'export' || step === 'rig') && <Timeline />}
           {step === 'rig' && !character && hasJoints && (rigType === 'humanoid' || rigType === 'quadruped') && <RigPreview />}
           <div className="overlay" hidden={driving}>
             {step === 'rig' && !character && <span className="pill">Drag markers · Orbit: drag empty space · Zoom: scroll</span>}
             {step === 'rig' && !character && (rigType === 'humanoid' || rigType === 'quadruped') && <JointLegend />}
             {step === 'orient' && <span className="pill">Orange arrow = front (+Z)</span>}
+            {step === 'parts' && <PartsHint />}
           </div>
         </section>
       </main>
     </div>
   );
+}
+
+function PartsHint() {
+  const has = useStore((s) => !!s.parts);
+  const mode = useStore((s) => s.partsTool.mode);
+  const playing = useStore((s) => s.playing);
+  if (!has) return null;
+  if (playing) return <span className="pill">Previewing motion · pause to edit parts</span>;
+  const how = mode === 'brush' ? 'Paint: drag on the model · Size: [ ]' : mode === 'fill' ? 'Click to fill a similar colour' : 'Click a piece to assign it';
+  return <span className="pill">{how} · Orbit: drag empty space · Undo: Ctrl+Z</span>;
 }

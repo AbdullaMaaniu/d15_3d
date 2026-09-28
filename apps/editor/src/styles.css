@@ -227,3 +227,21 @@ pre.code { margin: 0; background: #0d0f13; border: 1px solid var(--line); border
   .joint-key .col { min-width: 0; }
   .joint-key button { font-size: 10px; padding: 1px 2px; }
 }
+
+/* Parts step */
+.part-list { display: flex; flex-direction: column; gap: 2px; }
+.part-row { display: grid; grid-template-columns: 12px minmax(0, 1fr) 34px 28px 26px 26px; align-items: center; gap: 6px; padding: 4px 4px 4px 8px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
+.part-row:hover, .part-row.hover { background: #232833; }
+.part-row.on { border-color: var(--accent); background: rgba(249, 115, 22, 0.08); }
+.part-dot { width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35); }
+.part-name { min-width: 0; background: transparent; border: 1px solid transparent; border-radius: 6px; color: var(--text); padding: 3px 6px; font: inherit; }
+.part-name:hover { border-color: var(--line); }
+.part-name:focus { outline: none; border-color: var(--accent); background: #0d0f13; }
+.part-share { font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.part-color { width: 26px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer; }
+.part-color::-webkit-color-swatch-wrapper { padding: 2px; }
+.part-color::-webkit-color-swatch { border: none; border-radius: 4px; }
+.part-row .iconbtn { width: 26px; height: 26px; }
+.iconbtn-space { width: 26px; }
+.warn { font-size: 12px; color: #fbbf24; }
+.link-row { display: flex; justify-content: center; }
