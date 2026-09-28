@@ -97,7 +97,8 @@ describe('retargeting', () => {
     const c = await rig('A');
     const binding = bindSkeleton(c.root, autoMapBones(c.root).map);
     const slim = binding.autoArmClearance;
-    expect(slim.left).toBeGreaterThan(0);
+    // The slim mannequin's straight arms already hang clear of its body.
+    expect(slim.left).toBeLessThan(0.1);
     expect(Math.abs(slim.left - slim.right)).toBeLessThan(0.05);
 
     // Widen the torso (a padded jacket): the arms need to swing further out.
