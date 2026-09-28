@@ -5,10 +5,18 @@
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "exports": {
-    ".": "./index.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
     "./clips.json": "./clips.json"
   },
-  "files": ["index.js", "index.d.ts", "clips.json", "LICENSE"],
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "clips.json",
+    "LICENSE"
+  ],
   "scripts": {
     "build:presets": "tsx scripts/build-presets.ts",
     "typecheck": "echo presets: nothing to typecheck"
@@ -17,5 +25,6 @@
     "@rigforge/core": "workspace:*",
     "three": "^0.186.1",
     "tsx": "^4.20.0"
-  }
+  },
+  "types": "index.d.ts"
 }
