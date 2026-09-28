@@ -5,6 +5,8 @@ export interface NormalizeOptions {
   rotation?: Quaternion;
   /** Target height in meters. Default 1.8. */
   targetHeight?: number;
+  /** Scale so the height ('height', default) or the largest dimension ('max') matches targetHeight. */
+  fit?: 'height' | 'max';
 }
 
 export interface Normalization {
@@ -28,7 +30,8 @@ export function computeNormalization(geometry: BufferGeometry, options: Normaliz
   const bb = rotated.boundingBox!;
   rotated.dispose();
   const sourceHeight = bb.max.y - bb.min.y;
-  const scale = sourceHeight > 0 ? targetHeight / sourceHeight : 1;
+  const measured = options.fit === 'max' ? Math.max(sourceHeight, bb.max.x - bb.min.x, bb.max.z - bb.min.z) : sourceHeight;
+  const scale = measured > 0 ? targetHeight / measured : 1;
   const center = new Vector3((bb.min.x + bb.max.x) / 2, bb.min.y, (bb.min.z + bb.max.z) / 2);
   const matrix = new Matrix4()
     .makeScale(scale, scale, scale)

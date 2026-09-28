@@ -1,4 +1,4 @@
-import { AnimationClip, BoxGeometry, CylinderGeometry, Group, LoadingManager, Mesh, MeshStandardMaterial, type Object3D } from 'three';
+import { AnimationClip, BoxGeometry, CapsuleGeometry, CylinderGeometry, SphereGeometry, Group, LoadingManager, Mesh, MeshStandardMaterial, type Object3D } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
@@ -111,4 +111,16 @@ export function loadSampleAnimal(): LoadedFile {
   const root = new Group();
   root.add(mesh);
   return { name: 'sample-dog.glb', scene: root, animations: [] };
+}
+
+/** Sample creature: a snake lying along Z (no preset skeleton fits it). */
+export function loadSampleCreature(): LoadedFile {
+  const skin = new MeshStandardMaterial({ color: 0x5f8f3e, roughness: 0.6 });
+  const root = new Group();
+  const body = new Mesh(new CapsuleGeometry(0.035, 1.1, 8, 20, 24).rotateX(Math.PI / 2).translate(0, 0.04, -0.1), skin);
+  const head = new Mesh(new SphereGeometry(0.055, 20, 14).scale(1, 0.7, 1.4).translate(0, 0.05, 0.52), skin);
+  body.name = 'Body';
+  head.name = 'Head';
+  root.add(body, head);
+  return { name: 'sample-snake.glb', scene: root, animations: [] };
 }

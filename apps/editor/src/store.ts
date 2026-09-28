@@ -2,6 +2,10 @@ import { create } from 'zustand';
 import { AnimationClip, BufferGeometry, Quaternion, Vector3, type Object3D, type SkinnedMesh } from 'three';
 import {
   alignHeading,
+  autoTails,
+  creatureDefs,
+  mirrorSubtree,
+  type CreatureBone,
   guessQuadrupedOrientation,
   quadrupedGaits,
   QUADRUPED_DEFS,
@@ -64,7 +68,7 @@ import {
   type EncodedClip,
 } from '@rigforge/core';
 import presetPack from '@rigforge/presets/clips.json';
-import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleProp, type LoadedFile } from './lib/loaders';
+import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleCreature, loadSampleProp, type LoadedFile } from './lib/loaders';
 import { computeWeights, detectJoints, detectQuadrupedJoints, type WeightSettings } from './lib/rigClient';
 import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
 
@@ -89,11 +93,12 @@ export interface ClipEntry {
   baked: AnimationClip;
 }
 
-export type RigType = 'humanoid' | 'quadruped' | 'prop';
+export type RigType = 'humanoid' | 'quadruped' | 'creature' | 'prop';
 
 /** Bone definitions for the current skinned rig type. */
 export function skeletonDefs(): readonly BoneDef[] {
   const s = useStore.getState();
+  if (s.rigType === 'creature') return creatureDefs(s.creatureBones);
   return s.rigType === 'quadruped' ? QUADRUPED_DEFS : humanoidDefs(s.fingers);
 }
 
@@ -146,6 +151,7 @@ interface State {
   rigTimings: Record<string, number> | null;
 
   rigType: RigType;
+  creatureBones: CreatureBone[];
   propSplit: PartSplit | null;
   propRig: PropRig | null;
 
@@ -180,7 +186,7 @@ interface Actions {
   goto(step: Step): void;
   setError(e: string | null): void;
   loadFromFiles(files: File[]): Promise<void>;
-  loadSampleModel(pose: 'T' | 'A' | 'prop' | 'quadruped'): Promise<void>;
+  loadSampleModel(pose: 'T' | 'A' | 'prop' | 'quadruped' | 'creature'): Promise<void>;
   rotate(axis: 'x' | 'y' | 'z', degrees: number): void;
   autoOrient(): void;
   setHeight(h: number): void;
@@ -225,6 +231,10 @@ interface Actions {
   buildPropRig(): void;
   addPropMotion(motion: PropMotion, name: string): void;
   addGait(id: GaitId): void;
+  addCreatureJoint(p: [number, number, number]): void;
+  removeCreatureBone(name: string): void;
+  renameCreatureBone(name: string, next: string): void;
+  mirrorCreatureBone(name: string): void;
   openProject(blob: Blob): Promise<void>;
 }
 
@@ -290,6 +300,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   kernel: null,
   rigTimings: null,
   rigType: 'humanoid',
+  creatureBones: [],
   propSplit: null,
   propRig: null,
   character: null,
@@ -333,6 +344,11 @@ export const useStore = create<State & Actions>()((set, get) => ({
   },
 
   async loadSampleModel(pose) {
+    if (pose === 'creature') {
+      set({ rigType: 'creature' });
+      ingest(loadSampleCreature());
+      return;
+    }
     if (pose === 'quadruped') {
       set({ rigType: 'quadruped' });
       ingest(loadSampleAnimal());
@@ -369,7 +385,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   confirmOrientation() {
     const { prepared, rotation, height } = get();
     if (!prepared) return;
-    const n = computeNormalization(prepared.geometry, { rotation, targetHeight: height });
+    const n = computeNormalization(prepared.geometry, { rotation, targetHeight: height, fit: fitFor(get().rigType) });
     const geometry = applyNormalization(prepared.geometry, n);
     geometry.computeVertexNormals();
     set({
@@ -384,6 +400,12 @@ export const useStore = create<State & Actions>()((set, get) => ({
       activeClip: null,
       exportResult: null,
     });
+    if (get().rigType === 'creature') {
+      geometry.computeBoundingBox();
+      const c = geometry.boundingBox!.getCenter(new Vector3());
+      set({ creatureBones: [{ name: 'root', parent: null }], joints: { joints: { root: [c.x, c.y, c.z] }, tails: {} }, detection: null, selectedBone: 'root' });
+      return;
+    }
     if (get().rigType === 'prop') {
       const split = splitParts(geometry, 4);
       geometry.computeBoundingBox();
@@ -436,7 +458,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
     const target = isTail ? next.tails : next.joints;
     target[name] = p;
     if (get().symmetry) {
-      const cx = get().detection?.measurements.centerX ?? 0;
+      const cx = get().detection?.measurements.centerX ?? joints.joints.root?.[0] ?? 0;
       const mirrored = mirrorBoneName(name);
       if (mirrored !== name) target[mirrored] = [2 * cx - p[0], p[1], p[2]];
       else target[name] = [cx, p[1], p[2]];
@@ -461,13 +483,18 @@ export const useStore = create<State & Actions>()((set, get) => ({
       const { positions, index } = arrays(normalized.geometry);
       const t0 = performance.now();
       const quad = get().rigType === 'quadruped';
-      const w = await computeWeights(positions, index, joints, quad ? 'quadruped' : fingers ? 'humanoid' : 'humanoid-nofingers', weightSettings, (stage, fraction) => {
+      const creature = get().rigType === 'creature';
+      const defs = skeletonDefs();
+      const rigJoints = creature ? { joints: joints.joints, tails: autoTails(defs, joints.joints, joints.tails) } : joints;
+      const kind = creature ? [...defs] : quad ? 'quadruped' : fingers ? 'humanoid' : 'humanoid-nofingers';
+      const w = await computeWeights(positions, index, rigJoints, kind, weightSettings, (stage, fraction) => {
         // Progress messages cross the worker boundary asynchronously; drop any that arrive late.
         if (!finished && fraction < 1) set({ busy: `${stage}…`, progress: fraction });
       });
-      const built = buildSkinnedCharacter(normalized.geometry, normalized.materials, skeletonDefs(), joints, w.skinIndex, w.skinWeight, quad ? 'Animal' : 'Character');
-      // Humanoids retarget through a canonical binding; quadrupeds use direct bone keys.
-      const binding = quad ? null : bindSkeleton(built.root, autoMapBones(built.root).map);
+      const built = buildSkinnedCharacter(normalized.geometry, normalized.materials, defs, rigJoints, w.skinIndex, w.skinWeight, quad ? 'Animal' : creature ? 'Creature' : 'Character');
+      // Humanoids retarget through a canonical binding; other skeletons use direct bone keys.
+      const binding = quad || creature ? null : bindSkeleton(built.root, autoMapBones(built.root).map);
+      if (creature) set({ joints: rigJoints });
       const kernel = w.kernel;
       set({
         character: { root: built.root, built },
@@ -478,7 +505,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
         shading: 'textured',
       });
       rebakeAll();
-      get().setTestClip('walk');
+      if (!creature) get().setTestClip('walk');
     } catch (e) {
       set({ error: `Rigging failed: ${(e as Error).message}` });
     } finally {
@@ -791,6 +818,55 @@ export const useStore = create<State & Actions>()((set, get) => ({
     rebakeAll();
   },
 
+  addCreatureJoint(p) {
+    const { creatureBones, joints, selectedBone } = get();
+    if (!joints) return;
+    const parent = selectedBone && creatureBones.some((b) => b.name === selectedBone) ? selectedBone : 'root';
+    const names = new Set(creatureBones.map((b) => b.name));
+    // Name by chain: children of "tail1" become "tail2", otherwise bone1, bone2...
+    const m = /^(.*?)(\d+)$/.exec(parent);
+    let name = m ? `${m[1]}${+m[2] + 1}` : 'bone1';
+    for (let i = 1; names.has(name); i++) name = m ? `${m[1]}${+m[2] + 1 + i}` : `bone${i + 1}`;
+    set({
+      creatureBones: [...creatureBones, { name, parent }],
+      joints: { joints: { ...joints.joints, [name]: p }, tails: joints.tails },
+      selectedBone: name,
+    });
+  },
+
+  removeCreatureBone(name) {
+    const { creatureBones, joints } = get();
+    if (!joints || name === 'root') return;
+    const parent = creatureBones.find((b) => b.name === name)?.parent ?? 'root';
+    const rest = { ...joints.joints };
+    delete rest[name];
+    set({
+      creatureBones: creatureBones.filter((b) => b.name !== name).map((b) => (b.parent === name ? { ...b, parent } : b)),
+      joints: { joints: rest, tails: {} },
+      selectedBone: parent,
+    });
+  },
+
+  renameCreatureBone(name, next) {
+    const { creatureBones, joints } = get();
+    const clean = next.trim().replace(/[^\w-]/g, '_');
+    if (!joints || !clean || clean === name || creatureBones.some((b) => b.name === clean)) return;
+    const jr = Object.fromEntries(Object.entries(joints.joints).map(([k, v]) => [k === name ? clean : k, v]));
+    set({
+      creatureBones: creatureBones.map((b) => ({ name: b.name === name ? clean : b.name, parent: b.parent === name ? clean : b.parent })),
+      joints: { joints: jr, tails: {} },
+      selectedBone: clean,
+    });
+  },
+
+  mirrorCreatureBone(name) {
+    const { creatureBones, joints } = get();
+    if (!joints || name === 'root') return;
+    const cx = joints.joints.root?.[0] ?? 0;
+    const m = mirrorSubtree(creatureBones, joints.joints, name, cx);
+    set({ creatureBones: [...creatureBones, ...m.bones], joints: { joints: { ...joints.joints, ...m.joints }, tails: {} } });
+  },
+
   addGait(id) {
     const built = get().character?.built;
     const joints = get().joints;
@@ -809,7 +885,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
     let n = name;
     for (let i = 2; names.has(n); i++) n = `${name} ${i}`;
     const propKeys = propMotionKeys(motion);
-    const loop = motion.type === 'spin' || motion.type === 'bob' || ('pingPong' in motion && motion.pingPong);
+    const loop = motion.type === 'spin' || motion.type === 'bob' || motion.type === 'wave' || ('pingPong' in motion && motion.pingPong);
     const entry = { id: `c${++clipCounter}`, name: n, source: `${motion.type} · ${motion.bone}`, normalized: propTimeline(motion.duration, n), loop, inPlace: false, speed: 1, propKeys };
     set({ clips: [...get().clips, { ...entry, baked: bakeProp(entry) }], activeClip: entry.id, playing: true });
   },
@@ -886,13 +962,18 @@ function arrays(geometry: BufferGeometry) {
 }
 
 function orientationFor(rigType: RigType, geometry: BufferGeometry): { rotation: Quaternion; notes: string[] } {
-  if (rigType === 'prop') return { rotation: new Quaternion(), notes: [] };
+  if (rigType === 'prop' || rigType === 'creature') return { rotation: new Quaternion(), notes: [] };
   if (rigType === 'quadruped') return guessQuadrupedOrientation(geometry);
   return guessOrientation(geometry);
 }
 
+/** Characters and animals are sized by height; free-form creatures and props by their largest dimension. */
+export function fitFor(rigType: RigType): 'height' | 'max' {
+  return rigType === 'creature' || rigType === 'prop' ? 'max' : 'height';
+}
+
 function defaultHeight(rigType: RigType): number {
-  return rigType === 'humanoid' ? 1.8 : rigType === 'quadruped' ? 0.8 : 1;
+  return rigType === 'humanoid' ? 1.8 : rigType === 'quadruped' ? 0.8 : rigType === 'creature' ? 1 : 1;
 }
 
 function ingest(file: LoadedFile) {

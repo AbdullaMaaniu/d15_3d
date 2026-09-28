@@ -3,11 +3,16 @@ import { quadrupedGaits } from '@rigforge/core';
 import { PRESETS, skeletonDefs, useStore } from '../store';
 import { Check, Notes, Section, Seg } from '../components/ui';
 import { PropRigPanel } from './PropRigPanel';
+import { CreatureRigPanel } from './CreatureRigPanel';
 
 export function RigPanel() {
-  const isProp = useStore((s) => s.rigType === 'prop');
+  const rigType = useStore((s) => s.rigType);
+  if (rigType === 'prop') return <PropRigPanel />;
+  // Creatures build their skeleton by hand, then share painting/inspection once rigged.
+  const built = useStore((s) => !!s.character);
+  if (rigType === 'creature' && !built) return <CreatureRigPanel />;
   // Humanoids and quadrupeds share the joints → weights → pose-test flow.
-  return isProp ? <PropRigPanel /> : <HumanoidRigPanel />;
+  return <HumanoidRigPanel />;
 }
 
 function HumanoidRigPanel() {
@@ -35,9 +40,12 @@ function HumanoidRigPanel() {
   const set = useStore((s) => s.set);
 
   const quad = useStore((s) => s.rigType === 'quadruped');
-  const tests = quad
-    ? (joints ? quadrupedGaits(joints) : []).map((g) => ({ id: g.id as string, name: g.name }))
-    : PRESETS.map((p) => ({ id: p.id, name: p.name }));
+  const creature = useStore((s) => s.rigType === 'creature');
+  const tests = creature
+    ? []
+    : quad
+      ? (joints ? quadrupedGaits(joints) : []).map((g) => ({ id: g.id as string, name: g.name }))
+      : PRESETS.map((p) => ({ id: p.id, name: p.name }));
   if (character) {
     const testId = testClip ? tests.find((p) => testClip.name === `test:${p.name}`)?.id ?? '' : '';
     return (

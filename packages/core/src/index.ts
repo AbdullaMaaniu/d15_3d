@@ -42,3 +42,4 @@ export {
 export { QUADRUPED_DEFS, TAIL_BONES, legBone, detectQuadruped, guessQuadrupedOrientation, type QuadrupedDetectResult } from './rig/quadruped';
 export { createQuadrupedMannequin } from './mesh/mannequin';
 export { quadrupedGaits, type GaitClip, type GaitId } from './anim/gaits';
+export { creatureDefs, autoTails, boneChain, mirrorSubtree, isLeaf, type CreatureBone } from './rig/creature';

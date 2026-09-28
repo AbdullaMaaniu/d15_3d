@@ -32,6 +32,9 @@ export function DropZone() {
         <button className="btn ghost" onClick={() => void loadSample('quadruped')} title="A dog, to try animal rigging">
           Sample animal
         </button>
+        <button className="btn ghost" onClick={() => void loadSample('creature')} title="A snake, to try building a custom skeleton">
+          Sample creature
+        </button>
         <button className="btn ghost" onClick={() => void loadSample('prop')} title="A treasure chest, to try prop rigging">
           Sample prop
         </button>
@@ -66,6 +69,7 @@ export function ImportPanel() {
               options={[
                 ['humanoid', 'Humanoid'],
                 ['quadruped', 'Animal (4 legs)'],
+                ['creature', 'Creature (custom)'],
                 ['prop', 'Prop / object'],
               ]}
             />
@@ -74,6 +78,8 @@ export function ImportPanel() {
                 ? 'Auto-rigged with a full humanoid skeleton, including fingers.'
                 : rigType === 'quadruped'
                   ? 'Dogs, cats, horses… Legs, spine, neck, head and tail are found automatically, with walk, trot and gallop cycles.'
+                  : rigType === 'creature'
+                    ? 'Dragons, spiders, fish, snakes, tentacles… Click on the model to build any skeleton you like.'
                   : 'Doors, chests, wheels, turrets… Each separate part gets a pivot you can spin, swing or slide.'}
             </p>
           </Section>

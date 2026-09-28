@@ -82,12 +82,15 @@ export function computeSkinWeights(
   const timings: Record<string, number> = {};
   const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
-  let minY = Infinity, maxY = -Infinity;
-  for (let i = 1; i < positions.length; i += 3) {
-    if (positions[i] < minY) minY = positions[i];
-    if (positions[i] > maxY) maxY = positions[i];
+  // Voxel size from the largest dimension (height for characters, length for long creatures).
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < positions.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      if (positions[i + k] < lo[k]) lo[k] = positions[i + k];
+      if (positions[i + k] > hi[k]) hi[k] = positions[i + k];
+    }
   }
-  const H = maxY - minY;
+  const H = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
   const dx = H / (options.resolution ?? 192);
 
   progress('Voxelizing', 0.05);

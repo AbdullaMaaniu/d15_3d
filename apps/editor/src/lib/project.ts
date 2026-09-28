@@ -17,6 +17,8 @@ import {
   type PropRig,
   buildPropCharacter,
   QUADRUPED_DEFS,
+  creatureDefs,
+  type CreatureBone,
   splitParts,
 } from '@rigforge/core';
 import type { ClipEntry, RigType, useStore } from '../store';
@@ -44,6 +46,7 @@ interface ProjectFile {
   step: StoreState['step'];
   rigType?: RigType;
   propRig?: PropRig | null;
+  creatureBones?: CreatureBone[];
   /** Whether the prop rig was built (props don't store weights: they're rigid). */
   propBuilt?: boolean;
 }
@@ -99,6 +102,7 @@ export async function saveProject(s: StoreState): Promise<Blob> {
     joints: s.joints,
     rigType: s.rigType,
     propRig: s.propRig,
+    creatureBones: s.creatureBones,
     propBuilt: s.rigType === 'prop' && !!built,
     rig: built && s.rigType !== 'prop' && s.joints
       ? {
@@ -137,7 +141,8 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
   const materials = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]) as Material[];
   const prepared = { geometry, materials };
   const rotation = new Quaternion().fromArray(file.rotation);
-  const normalizedGeometry = applyNormalization(geometry, computeNormalization(geometry, { rotation, targetHeight: file.height }));
+  const fit = file.rigType === 'creature' || file.rigType === 'prop' ? 'max' : 'height';
+  const normalizedGeometry = applyNormalization(geometry, computeNormalization(geometry, { rotation, targetHeight: file.height, fit }));
   normalizedGeometry.computeVertexNormals();
   const normalized = { geometry: normalizedGeometry, materials };
 
@@ -178,15 +183,17 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     return patch;
   }
   const quadruped = file.rigType === 'quadruped';
-  Object.assign(patch, { rigType: quadruped ? 'quadruped' : 'humanoid' });
+  const creature = file.rigType === 'creature';
+  Object.assign(patch, { rigType: file.rigType ?? 'humanoid', creatureBones: file.creatureBones ?? [] });
 
   if (file.rig && file.joints) {
     const si = b64.decode(file.rig.skinIndex);
     const sw = b64.decode(file.rig.skinWeight);
     const skinIndex = new Uint16Array(si.buffer, si.byteOffset, si.byteLength / 2);
     const skinWeight = new Float32Array(sw.buffer, sw.byteOffset, sw.byteLength / 4);
-    if (quadruped) {
-      const built = buildSkinnedCharacter(normalizedGeometry, materials, QUADRUPED_DEFS, file.joints, skinIndex, skinWeight, 'Animal');
+    if (quadruped || creature) {
+      const defs = creature ? creatureDefs(file.creatureBones ?? []) : QUADRUPED_DEFS;
+      const built = buildSkinnedCharacter(normalizedGeometry, materials, defs, file.joints, skinIndex, skinWeight, creature ? 'Creature' : 'Animal');
       Object.assign(patch, {
         character: { root: built.root, built },
         binding: null,

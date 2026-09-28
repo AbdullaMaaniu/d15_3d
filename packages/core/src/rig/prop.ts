@@ -161,10 +161,31 @@ export type PropMotion =
   | { type: 'spin'; bone: string; axis: V3; turns: number; duration: number }
   | { type: 'swing'; bone: string; axis: V3; degrees: number; duration: number; pingPong: boolean }
   | { type: 'slide'; bone: string; offset: V3; duration: number; pingPong: boolean }
-  | { type: 'bob'; bone: string; height: number; duration: number };
+  | { type: 'bob'; bone: string; height: number; duration: number }
+  /** A travelling wave down a chain (tails, tentacles, snakes). */
+  | { type: 'wave'; bone: string; chain: string[]; axis: V3; degrees: number; duration: number; waves?: number };
 
 /** Generates keys for common mechanical motions. */
 export function propMotionKeys(m: PropMotion): PropKeys {
+  if (m.type === 'wave') {
+    const steps = 16;
+    const keys: PropKeys = { duration: m.duration, bones: {} };
+    const axis = new Vector3(...m.axis).normalize();
+    const waves = m.waves ?? 1;
+    m.chain.forEach((bone, k) => {
+      const times: number[] = [], rot: number[] = [];
+      // Amplitude grows toward the tip; each link lags the previous one.
+      const amp = ((m.degrees * Math.PI) / 180) * (0.5 + (0.5 * (k + 1)) / m.chain.length);
+      const lag = (k / Math.max(1, m.chain.length)) * waves * Math.PI * 2;
+      for (let i = 0; i <= steps; i++) {
+        const f = i / steps;
+        times.push(f * m.duration);
+        rot.push(...new Quaternion().setFromAxisAngle(axis, Math.sin(f * Math.PI * 2 - lag) * amp).toArray());
+      }
+      keys.bones[bone] = { times, rot };
+    });
+    return keys;
+  }
   const steps = m.type === 'spin' ? Math.max(4, Math.ceil(Math.abs(m.turns) * 4)) : 16;
   const times: number[] = [];
   const rot: number[] = [];

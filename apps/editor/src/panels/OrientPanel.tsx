@@ -34,7 +34,7 @@ export function OrientPanel() {
         </div>
         <Notes items={notes} ok />
       </Section>
-      <Section title="Height">
+      <Section title={rigType === 'creature' || prop ? 'Size (largest dimension)' : 'Height'}>
         <div className="row">
           <input
             type="range"
@@ -54,7 +54,7 @@ export function OrientPanel() {
         </p>
       </Section>
       <button className="btn primary block" onClick={confirm}>
-        {prop ? 'Looks right: set up parts →' : 'Looks right: find the joints →'}
+        {prop ? 'Looks right: set up parts →' : rigType === 'creature' ? 'Looks right: build the skeleton →' : 'Looks right: find the joints →'}
       </button>
     </>
   );

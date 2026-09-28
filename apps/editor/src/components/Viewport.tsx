@@ -4,9 +4,10 @@ import { GizmoHelper, GizmoViewport, Grid, OrbitControls } from '@react-three/dr
 import { PMREMGenerator, type Mesh } from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { computeNormalization } from '@rigforge/core';
-import { useStore } from '../store';
+import { fitFor, useStore } from '../store';
 import { JointEditor } from './JointEditor';
 import { PropEditor } from './PropEditor';
+import { CreatureEditor } from './CreatureEditor';
 import { CharacterView } from './CharacterView';
 
 function RoomEnv() {
@@ -28,12 +29,13 @@ function RoomEnv() {
 /** The imported model, previewed with the current orientation and scale. */
 function SourceView() {
   const prepared = useStore((s) => s.prepared);
+  const rigType = useStore((s) => s.rigType);
   const rotation = useStore((s) => s.rotation);
   const height = useStore((s) => s.height);
   const ref = useRef<Mesh>(null);
   const matrix = useMemo(
-    () => (prepared ? computeNormalization(prepared.geometry, { rotation, targetHeight: height }).matrix : null),
-    [prepared, rotation, height],
+    () => (prepared ? computeNormalization(prepared.geometry, { rotation, targetHeight: height, fit: fitFor(rigType) }).matrix : null),
+    [prepared, rotation, height, rigType],
   );
   useEffect(() => {
     if (ref.current && matrix) {
@@ -90,19 +92,22 @@ function CameraTarget() {
   useEffect(() => {
     if (!controls) return;
     // Frame the whole model: tall characters by height, wide props by width.
-    let width = height * 0.6, depth = height * 0.4;
+    let width = height * 0.6, depth = height * 0.4, tall = height, midY = height * 0.5;
     if (normalized) {
       normalized.geometry.computeBoundingBox();
       const bb = normalized.geometry.boundingBox!;
       width = bb.max.x - bb.min.x;
       depth = bb.max.z - bb.min.z;
+      tall = bb.max.y - bb.min.y;
+      midY = (bb.min.y + bb.max.y) / 2;
     }
-    const fit = Math.max(height, width / Math.min(aspect, 1.6), depth);
-    controls.target.set(0, height * 0.5, 0);
-    if (useStore.getState().rigType === 'quadruped') {
+    const fit = Math.max(tall, width / Math.min(aspect, 1.6), depth);
+    controls.target.set(0, midY, 0);
+    const rt = useStore.getState().rigType;
+    if (rt === 'quadruped' || rt === 'creature') {
       // Three-quarter side view: gaits read best from the side.
-      camera.position.set(fit * 1.45, height * 0.5 + fit * 0.35, fit * 0.95);
-    } else camera.position.set(0, height * 0.5 + fit * 0.18, depth / 2 + fit * 2.1);
+      camera.position.set(fit * 1.45, midY + fit * 0.35, fit * 0.95);
+    } else camera.position.set(0, midY + fit * 0.18, depth / 2 + fit * 2.1);
     controls.update();
   }, [controls, camera, height, step, normalized, aspect]);
   return null;
@@ -126,7 +131,8 @@ export function Viewport() {
   const character = useStore((s) => s.character);
   const height = useStore((s) => s.height);
   const hasModel = useStore((s) => !!s.prepared);
-  const isProp = useStore((s) => s.rigType === 'prop');
+  const rigType = useStore((s) => s.rigType);
+  const isProp = rigType === 'prop';
 
   return (
     <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 1.1, 3.8], fov: 38, near: 0.01, far: 200 }} gl={{ preserveDrawingBuffer: true }}>
@@ -144,7 +150,8 @@ export function Viewport() {
 
       {(step === 'import' || step === 'orient') && hasModel && <SourceView />}
       {step === 'orient' && <FrontIndicator height={height} />}
-      {step === 'rig' && !character && !isProp && (
+      {step === 'rig' && !character && rigType === 'creature' && <CreatureEditor />}
+      {step === 'rig' && !character && !isProp && rigType !== 'creature' && (
         <>
           <NormalizedView />
           <JointEditor />

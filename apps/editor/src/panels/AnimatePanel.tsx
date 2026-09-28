@@ -30,6 +30,17 @@ function GaitSection() {
 
 const AXES: Array<[string, [number, number, number]]> = [['X', [1, 0, 0]], ['Y', [0, 1, 0]], ['Z', [0, 0, 1]]];
 
+/** A bone and its first-child descendants, e.g. a tail. */
+function chainFrom(built: { bones: Record<string, import('three').Bone> } | null, start: string): string[] {
+  const out: string[] = [];
+  let cur = built?.bones[start];
+  while (cur && !out.includes(cur.name)) {
+    out.push(cur.name);
+    cur = cur.children.find((c) => (c as import('three').Bone).isBone) as import('three').Bone | undefined;
+  }
+  return out;
+}
+
 function PropMotionSection() {
   const built = useStore((s) => s.character?.built ?? null);
   const bones = useMemo(() => built?.skeleton.bones.map((b) => b.name) ?? [], [built]);
@@ -41,10 +52,11 @@ function PropMotionSection() {
   const [amount, setAmount] = useState(90);
   const [duration, setDuration] = useState(1.5);
   const [pingPong, setPingPong] = useState(false);
-  const unit = type === 'spin' ? 'turns' : type === 'swing' ? 'degrees' : 'meters';
+  const unit = type === 'spin' ? 'turns' : type === 'swing' || type === 'wave' ? 'degrees' : 'meters';
   const pick = (t: PropMotion['type']) => {
     setType(t);
-    setAmount(t === 'spin' ? 1 : t === 'swing' ? 90 : t === 'slide' ? 0.3 : 0.05);
+    setAmount(t === 'spin' ? 1 : t === 'swing' ? 90 : t === 'wave' ? 25 : t === 'slide' ? 0.3 : 0.05);
+    if (t === 'wave') setAxis('Y');
   };
   const add = () => {
     const a = AXES.find((x) => x[0] === axis)![1];
@@ -52,18 +64,17 @@ function PropMotionSection() {
       type === 'spin' ? { type, bone, axis: a, turns: amount, duration }
       : type === 'swing' ? { type, bone, axis: a, degrees: amount, duration, pingPong }
       : type === 'slide' ? { type, bone, offset: [a[0] * amount, a[1] * amount, a[2] * amount], duration, pingPong }
-      : { type, bone, height: amount, duration };
-    const label = { spin: 'Spin', swing: pingPong ? 'Swing' : 'Open', slide: 'Slide', bob: 'Bob' }[type];
+      : type === 'wave' ? { type, bone, chain: chainFrom(built, bone), axis: a, degrees: amount, duration }
+      : { type: 'bob', bone, height: amount, duration };
+    const label = { spin: 'Spin', swing: pingPong ? 'Swing' : 'Open', slide: 'Slide', bob: 'Bob', wave: 'Wave' }[type];
     addPropMotion(m, `${label} ${bone}`);
   };
   return (
     <Section title="Add a motion">
-      <div className="row">
-        <select className="text" style={{ flex: 1 }} value={bone} onChange={(e) => setBone(e.target.value)} aria-label="Motion bone">
-          {bones.map((b) => <option key={b} value={b}>{b}</option>)}
-        </select>
-        <Seg value={type} onChange={pick} options={[['swing', 'Swing'], ['spin', 'Spin'], ['slide', 'Slide'], ['bob', 'Bob']]} />
-      </div>
+      <select className="text" value={bone} onChange={(e) => setBone(e.target.value)} aria-label="Motion bone">
+        {bones.map((b) => <option key={b} value={b}>{b}</option>)}
+      </select>
+      <Seg value={type} onChange={pick} options={[['swing', 'Swing'], ['spin', 'Spin'], ['slide', 'Slide'], ['bob', 'Bob'], ['wave', 'Wave']]} />
       <div className="row">
         {type !== 'bob' && <Seg value={axis} onChange={setAxis} options={AXES.map(([n]) => [n, n] as [string, string])} />}
         <label className="check">
@@ -74,6 +85,7 @@ function PropMotionSection() {
         </label>
       </div>
       {(type === 'swing' || type === 'slide') && <Check checked={pingPong} onChange={setPingPong}>Go and come back (loop)</Check>}
+      {type === 'wave' && <p className="footer-note">Ripples down the chain from this bone: tails, tentacles, snakes, fins.</p>}
       <button className="btn" onClick={add}>+ Add motion</button>
     </Section>
   );
@@ -177,15 +189,15 @@ export function AnimatePanel() {
   const rigType = useStore((s) => s.rigType);
   const isProp = rigType === 'prop';
   const isQuad = rigType === 'quadruped';
-  const direct = isProp || isQuad;
+  const direct = isProp || isQuad || rigType === 'creature';
 
   return (
     <>
       <div>
         <h2>Animations</h2>
         <p>
-          {isProp
-            ? 'Spin, swing, slide or bob any part, or keyframe your own motion.'
+          {isProp || rigType === 'creature'
+            ? 'Spin, swing, slide, bob or wave any part, or keyframe your own motion.'
             : isQuad
               ? 'Add procedural gaits sized to your animal, or keyframe your own.'
               : 'Add motion-captured presets or retarget your own Mixamo FBX, BVH or GLB clips.'}
