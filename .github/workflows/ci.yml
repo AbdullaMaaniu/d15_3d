@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: pnpm install --frozen-lockfile
+      - name: Rust kernel tests
+        run: cargo test --manifest-path crates/kernels/Cargo.toml
+      - name: Rebuild WASM kernels
+        run: pnpm build:wasm
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - name: End-to-end test
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: test-results

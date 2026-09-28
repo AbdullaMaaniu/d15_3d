@@ -30,6 +30,7 @@ describe('detectHumanoid', () => {
       const { result, errors, ms } = report(pose, true);
       if (process.env.RF_DEBUG) console.log(pose, result.pose, Math.round(ms), 'ms', result.notes, Object.fromEntries(Object.entries(errors).map(([k, v]) => [k, +v.toFixed(3)])));
       expect(result.pose).toBe(pose);
+      expect(result.notes).toEqual([]);
       for (const name of MAIN) expect(errors[name], name).toBeLessThan(0.07);
     });
   }

@@ -1,0 +1,87 @@
+import { useState } from 'react';
+import { useStore } from '../store';
+import { FilePicker, Notes, Section } from '../components/ui';
+
+export function DropZone() {
+  const loadFromFiles = useStore((s) => s.loadFromFiles);
+  const loadSample = useStore((s) => s.loadSampleModel);
+  const [over, setOver] = useState(false);
+  return (
+    <div
+      className={`drop${over ? ' over' : ''}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setOver(true);
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOver(false);
+        void loadFromFiles(Array.from(e.dataTransfer.files));
+      }}
+    >
+      <strong>Drop your Meshy model here</strong>
+      <p>GLB, glTF, FBX or OBJ. Include textures, .bin or .mtl files alongside.</p>
+      <div className="row">
+        <FilePicker className="btn primary" accept=".glb,.gltf,.fbx,.obj,.mtl,.bin,.png,.jpg,.jpeg,.webp" multiple onFiles={(f) => void loadFromFiles(f)}>
+          Choose files
+        </FilePicker>
+        <button className="btn" onClick={() => void loadSample('A')}>
+          Try a sample
+        </button>
+      </div>
+      <p className="footer-note">Files never leave your browser.</p>
+    </div>
+  );
+}
+
+export function ImportPanel() {
+  const report = useStore((s) => s.report);
+  const file = useStore((s) => s.file);
+  const existingRig = useStore((s) => s.existingRig);
+  const goto = useStore((s) => s.goto);
+  const useExisting = useStore((s) => s.useExistingRig);
+
+  return (
+    <>
+      <div>
+        <h2>Import</h2>
+        <p>Bring in a static model from Meshy.ai (or any humanoid mesh).</p>
+      </div>
+      <DropZone />
+      {report && file && (
+        <>
+          <Section title={file.name}>
+            <div className="stats">
+              <div><span>Triangles</span><span>{report.triangles.toLocaleString()}</span></div>
+              <div><span>Vertices</span><span>{report.vertices.toLocaleString()}</span></div>
+              <div><span>Materials</span><span>{report.materials}</span></div>
+              <div><span>Textures</span><span>{report.textures.length}</span></div>
+              <div><span>Parts</span><span>{report.islands}</span></div>
+              <div><span>Open edges</span><span>{report.boundaryEdges.toLocaleString()}</span></div>
+            </div>
+            {report.textures.length > 0 && (
+              <p className="footer-note">
+                {report.textures.map((t) => `${t.slot} ${t.width}×${t.height}`).join(' · ')}
+              </p>
+            )}
+          </Section>
+          {report.issues.length > 0 && (
+            <Section title="Mesh check">
+              <Notes items={report.issues} />
+            </Section>
+          )}
+          {existingRig && (
+            <Section title="Existing rig found">
+              <p>This file already has a skeleton{file.animations.length ? ` and ${file.animations.length} animation(s)` : ''}. You can keep it and go straight to animation, or re-rig from scratch.</p>
+              <button className="btn" onClick={useExisting}>Keep existing rig</button>
+            </Section>
+          )}
+          <button className="btn primary block" onClick={() => goto('orient')}>
+            Continue to orientation →
+          </button>
+        </>
+      )}
+    </>
+  );
+}

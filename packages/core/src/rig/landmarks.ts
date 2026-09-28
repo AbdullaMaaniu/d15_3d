@@ -1,4 +1,4 @@
-import { EMPTY, type VoxelGrid } from '../voxel/grid';
+import { EMPTY, SURFACE, type VoxelGrid } from '../voxel/grid';
 import type { Kernels } from '../kernels';
 import { tsKernels } from '../kernels';
 import { mirrorBoneName, type JointMap } from '../skeleton';
@@ -27,6 +27,8 @@ export interface DetectResult extends JointMap {
 interface Silhouette {
   /** Occupancy of the front projection (x, y). */
   occ: Uint8Array;
+  /** Front projection of surface voxels only: narrow gaps that closing filled stay open. */
+  surf: Uint8Array;
   /** Sum and count of solid voxel z per (x, y) cell, for centroids. */
   zSum: Float32Array;
   zCount: Uint16Array;
@@ -107,20 +109,20 @@ export function detectHumanoid(positions: Float32Array, index: Uint32Array | nul
   const x0 = wx(x0i);
 
   // --- Crotch ---------------------------------------------------------------------
-  // Scan up the center line between the legs for the first row that stays occupied.
+  // Scan down the center line from the pelvis for the first gap between the legs.
+  // (Scanning down rather than up tolerates knees or baggy trousers that touch lower down.)
   let crotchYi = -1;
-  const centerOcc = (yi: number) => occ(x0i, yi);
+  const surfOcc = (xi: number, yi: number) => xi >= 0 && yi >= 0 && xi < g.nx && yi < g.ny && sil.surf[xi + g.nx * yi] === 1;
+  const centerOcc = (yi: number) => surfOcc(x0i, yi) || (surfOcc(x0i - 1, yi) && surfOcc(x0i + 1, yi));
   const lowEmpty = !centerOcc(yiOf(minY + 0.1 * H)) || !centerOcc(yiOf(minY + 0.2 * H));
-  if (lowEmpty) {
-    for (let yi = yiOf(minY + 0.2 * H); yi < yiOf(minY + 0.7 * H); yi++) {
-      if (centerOcc(yi) && centerOcc(yi + 1) && centerOcc(yi + 2)) {
-        crotchYi = yi;
-        break;
-      }
+  for (let yi = yiOf(minY + 0.62 * H); yi > yiOf(minY + 0.2 * H); yi--) {
+    if (!centerOcc(yi) && !centerOcc(yi - 1)) {
+      crotchYi = yi + 1;
+      break;
     }
   }
-  if (crotchYi >= 0 && (wy(crotchYi) - minY < 0.36 * H || wy(crotchYi) - minY > 0.6 * H)) {
-    notes.push('The gap between the legs looked unusual (thighs touching?); leg joints were estimated from proportions.');
+  if (crotchYi >= 0 && wy(crotchYi) - minY < 0.36 * H) {
+    notes.push('The legs touch for most of their length; hip joints were estimated from proportions.');
     crotchYi = -1;
   }
   let crotchY: number;
@@ -367,6 +369,7 @@ export function detectHumanoid(positions: Float32Array, index: Uint32Array | nul
 
 function frontSilhouette(g: VoxelGrid): Silhouette {
   const occ = new Uint8Array(g.nx * g.ny);
+  const surf = new Uint8Array(g.nx * g.ny);
   const zSum = new Float32Array(g.nx * g.ny);
   const zCount = new Uint16Array(g.nx * g.ny);
   for (let z = 0; z < g.nz; z++) {
@@ -376,11 +379,12 @@ function frontSilhouette(g: VoxelGrid): Silhouette {
         if (g.data[x + g.nx * (y + g.ny * z)] === EMPTY) continue;
         const k = x + g.nx * y;
         occ[k] = 1;
+        if (g.data[x + g.nx * (y + g.ny * z)] === SURFACE) surf[k] = 1;
         zSum[k] += wz;
         zCount[k]++;
       }
   }
-  return { occ, zSum, zCount };
+  return { occ, surf, zSum, zCount };
 }
 
 /** Mirrors joints from one side to the other across the x = centerX plane. */
