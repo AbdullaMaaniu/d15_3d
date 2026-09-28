@@ -145,7 +145,7 @@ describe('skin weights', async () => {
         nearSum += armW;
         near++;
       }
-      if (along > 0.3 * len && armW > 0.2) {
+      if (along > 0.3 * len && along < 0.8 * len && radial < 0.5 * len && armW > 0.3) {
         armSide++;
         minArm = Math.min(minArm, armW);
       }
@@ -162,5 +162,32 @@ describe('skin weights', async () => {
     expect(maxUpper).toBeLessThan(0.01);
     // Near the joint the arm clearly leads (distance weights alone give about 0.68 here).
     expect(nearSum / near).toBeGreaterThan(0.75);
+  });
+
+  it('does not tear the surface when the arm comes down', () => {
+    // Neighbouring vertices must not come apart when the arm turns: a gap opens by the
+    // difference in how much they follow the arm times their distance from the pivot.
+    const names = defs.map((d) => d.name);
+    const arm = /^left(UpperArm|LowerArm|Hand|Thumb|Index|Middle|Ring|Little)/;
+    const P = detected.joints.leftUpperArm;
+    const reach = (v: number) => Math.hypot(positions[v * 3] - P[0], positions[v * 3 + 1] - P[1], positions[v * 3 + 2] - P[2]);
+    const jump = (w: ReturnType<typeof computeSkinWeights>) => {
+      const n = positions.length / 3;
+      const armW = new Float32Array(n);
+      for (let v = 0; v < n; v++) for (let k = 0; k < 4; k++) if (arm.test(names[w.skinIndex[v * 4 + k]])) armW[v] += w.skinWeight[v * 4 + k];
+      let worst = 0;
+      for (let t = 0; t < index.length; t += 3) {
+        for (let e = 0; e < 3; e++) {
+          const a = index[t + e], b = index[t + ((e + 1) % 3)];
+          worst = Math.max(worst, Math.abs(armW[a] - armW[b]) * Math.min(reach(a), reach(b)));
+        }
+      }
+      return worst;
+    };
+    const opts = { kernels: wasm, resolution: 128 };
+    const plain = jump(computeSkinWeights(positions, index, defs, detected, { ...opts, splitShoulders: false }));
+    const split = jump(computeSkinWeights(positions, index, defs, detected, opts));
+    console.log('gap', plain, split);
+    expect(split).toBeLessThan(plain * 1.25);
   });
 });
