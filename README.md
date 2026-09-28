@@ -10,7 +10,7 @@ Drop in a GLB/FBX/OBJ from Meshy (or any humanoid mesh), and RigForge will:
 4. **Refine** it: paint skin weights with a brush (add/subtract/smooth, mirrored), trim clips, and keyframe bones with a rotate gizmo, either to fix a retargeted clip or to pose a new one from scratch.
 5. **Export** it: one optimized GLB (meshopt geometry/animation compression, WebP textures, keyframe reduction) plus copy-paste code for three.js or React Three Fiber.
 
-It also rigs **props**: a chest lid, a door, a wheel or a turret. Each separate part gets a bone and pivot, and generated motions (spin, swing, slide, bob) or keyframes animate them.
+Besides humanoids it rigs **animals** (auto-detected legs, spine, neck, head and tail, with procedural walk/trot/gallop gaits), **custom creatures** (click on the model to build any skeleton: dragons, spiders, snakes, tentacles) and **props**: a chest lid, a door, a wheel or a turret. Each separate part gets a bone and pivot, and generated motions (spin, swing, slide, bob) or keyframes animate them.
 
 Projects save to a `.rigforge` file and autosave in the browser, so you can pick up where you left off.
 
@@ -24,6 +24,18 @@ pnpm dev          # editor at http://localhost:5173
 ```
 
 Click **Try a sample** to run the whole pipeline on the built-in mannequin.
+
+## Command line
+
+Rig a whole folder of exports without opening the editor:
+
+```bash
+pnpm --filter @rigforge/cli build
+node packages/cli/dist/cli.js rig exports/*.glb -o rigged/ --clips idle,walk,run,wave
+node packages/cli/dist/cli.js rig dog.glb -t quadruped
+```
+
+See [`packages/cli`](packages/cli) for every option.
 
 ## Using exported characters
 
@@ -81,6 +93,7 @@ Exported files are standard glTF 2.0, so plain `GLTFLoader` + `AnimationMixer` w
 | [`@rigforge/core`](packages/core) | Mesh prep, joint detection, skin weights, retargeting, clip tools and GLB export. Framework-agnostic, runs in browsers, workers and Node. |
 | [`@rigforge/three`](packages/three) | Small runtime: `loadCharacter`, playback and crossfades, state machines with 1D blends, masked/additive layers, root motion, foot IK, look-at, bone attachment. |
 | [`@rigforge/r3f`](packages/r3f) | `<Character>`, `<Attach>`, `useCharacter()` for React Three Fiber. |
+| [`@rigforge/cli`](packages/cli) | `rigforge rig *.glb`: batch auto-rigging and animation in Node, textures untouched. |
 | [`@rigforge/presets`](packages/presets) | Humanoid motion presets retargeted from the CMU motion capture database. |
 | [`crates/kernels`](crates/kernels) | Rust kernels (solid voxelization, geodesic bone distances) compiled to a dependency-free WASM module. |
 
@@ -109,7 +122,8 @@ The compiled WASM module is committed, so JavaScript-only contributors don't nee
 ## Roadmap
 
 - **Done:** humanoid pipeline with finger bones, presets, retargeting, optimized export, three.js/R3F runtime; weight painting, keyframe editor, clip trimming, prop rigs, project files and autosave; state machines, layers, root motion and foot IK in the runtime.
-- **Later:** quadruped and custom skeleton templates, procedural secondary motion, Meshy API import, CLI batch mode, and a pluggable AI text-to-motion provider.
+- **Also done:** quadruped template with gaits, custom creature skeletons, CLI batch mode.
+- **Later:** Meshy API import, procedural secondary motion, and a pluggable AI text-to-motion provider.
 
 ## Credits & licenses
 
