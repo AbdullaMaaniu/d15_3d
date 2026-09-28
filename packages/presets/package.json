@@ -1,0 +1,21 @@
+{
+  "name": "@rigforge/presets",
+  "version": "0.1.0",
+  "description": "Humanoid animation presets for RigForge, retargeted from the CMU Graphics Lab Motion Capture Database.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./clips.json": "./clips.json"
+  },
+  "files": ["index.js", "index.d.ts", "clips.json", "LICENSE"],
+  "scripts": {
+    "build:presets": "tsx scripts/build-presets.ts",
+    "typecheck": "echo presets: nothing to typecheck"
+  },
+  "devDependencies": {
+    "@rigforge/core": "workspace:*",
+    "three": "^0.186.1",
+    "tsx": "^4.20.0"
+  }
+}

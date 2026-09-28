@@ -1,0 +1,11 @@
+node_modules
+dist
+target
+.vite
+coverage
+*.log
+.DS_Store
+test-results
+playwright-report
+/corpus/*
+!/corpus/README.md
