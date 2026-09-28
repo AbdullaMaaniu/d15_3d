@@ -39,8 +39,13 @@ export async function computeWeights(
   settings: WeightSettings,
   onProgress: (stage: string, fraction: number) => void,
 ): Promise<SkinWeights> {
-  return api().weights(positions, index, joints, skeleton, settings, Comlink.proxy(onProgress));
+  // One weights job at a time: jobs share the worker pool's sessions.
+  const run = weightsQueue.then(() => api().weights(positions, index, joints, skeleton, settings, Comlink.proxy(onProgress)));
+  weightsQueue = run.catch(() => undefined);
+  return run;
 }
+
+let weightsQueue: Promise<unknown> = Promise.resolve();
 
 /** Seam-preserving triangle simplification (or subdivision) in the rig worker. */
 export async function remeshTriangles(mesh: MeshArrays, target: number): Promise<MeshArrays> {

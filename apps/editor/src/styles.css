@@ -195,3 +195,16 @@ pre.code { margin: 0; background: #0d0f13; border: 1px solid var(--line); border
 
 .seg.wrap { flex-wrap: wrap; }
 .seg.wrap button { flex: 1 0 auto; }
+
+/* Live rig preview */
+.rig-preview { position: absolute; top: 16px; right: 16px; width: min(320px, 42%); height: min(420px, 60%); display: flex; flex-direction: column; background: rgba(23, 26, 32, 0.94); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); z-index: 2; }
+.rig-preview header { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.rig-preview header strong { flex: 1; }
+.rig-preview header select { width: auto; padding: 3px 6px; font-size: 12px; }
+.rig-preview-view { position: relative; flex: 1; min-height: 0; }
+.rig-preview-status { position: absolute; left: 10px; bottom: 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
+.rig-preview-open { position: absolute; top: 16px; right: 16px; z-index: 2; cursor: pointer; color: var(--text); }
+@media (max-width: 860px) {
+  .rig-preview { top: 8px; right: 8px; width: 46%; height: 55%; }
+  .rig-preview-open { top: 8px; right: 8px; }
+}
