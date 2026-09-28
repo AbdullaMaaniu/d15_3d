@@ -26,7 +26,7 @@ export {
   type BakeOptions,
 } from './anim/retarget';
 export { armClearance, measureArmClearance, type ArmClearance } from './anim/armClearance';
-export { sliceClip, alignHeading, findLoop, makeSeamlessLoop, resampleClip, mirrorClip, poseDistance, clipDuration } from './anim/clipTools';
+export { sliceClip, alignHeading, findLoop, makeSeamlessLoop, resampleClip, mirrorClip, symmetrizeArms, poseDistance, clipDuration } from './anim/clipTools';
 export { encodeClip, decodeClip, type EncodedClip, type PresetPack } from './anim/codec';
 
 export { exportCharacter, optimizeDocument, EXPORT_PRESETS, toGLB, createIO, sizeBreakdown, type ExportOptions, type ExportPreset, type ExportResult, type SizeBreakdown } from './export/export';

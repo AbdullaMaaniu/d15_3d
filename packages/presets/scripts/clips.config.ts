@@ -14,11 +14,14 @@ export interface ClipSpec {
   loop?: { period: [number, number] };
   heading: 'travel' | 'facing' | 'start';
   description: string;
+  /** Loops only: rebuild the other arm from this one (mirrored, half a cycle later) when the take has a lazy arm. */
+  arms?: 'left' | 'right';
 }
 
 export const CLIPS: ClipSpec[] = [
   { id: 'idle', name: 'Idle', category: 'idle', take: '139_02', window: [0.2, 7.6], loop: { period: [3, 6] }, heading: 'facing', description: 'Standing, shifting weight' },
-  { id: 'walk', name: 'Walk', category: 'locomotion', take: '143_32', window: [0.5, 2.1], loop: { period: [0.8, 1.4] }, heading: 'travel', description: 'Walk cycle' },
+  // The actor's right arm barely swings in this take.
+  { id: 'walk', name: 'Walk', category: 'locomotion', take: '143_32', window: [0.5, 2.1], loop: { period: [0.8, 1.4] }, heading: 'travel', description: 'Walk cycle', arms: 'left' },
   { id: 'run', name: 'Run', category: 'locomotion', take: '09_01', window: [0.1, 1.2], loop: { period: [0.55, 0.9] }, heading: 'travel', description: 'Run cycle' },
   { id: 'walk_backward', name: 'Walk Backward', category: 'locomotion', take: '143_39', window: [1.8, 4.1], loop: { period: [0.8, 1.6] }, heading: 'facing', description: 'Backward walk cycle' },
   { id: 'strafe', name: 'Strafe', category: 'locomotion', take: '143_40', window: [4.6, 7.2], loop: { period: [0.8, 1.6] }, heading: 'facing', description: 'Sideways walk cycle' },

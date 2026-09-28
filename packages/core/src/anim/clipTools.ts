@@ -168,6 +168,37 @@ export function mirrorClip(clip: NormalizedClip): NormalizedClip {
   return { ...clip, rotations, hips };
 }
 
+const ARM = /^(left|right)(Shoulder|UpperArm|LowerArm|Hand|Thumb|Index|Middle|Ring|Little)/;
+
+/**
+ * Rebuilds one arm of a looping symmetric gait (a walk cycle) as the other arm,
+ * mirrored and half a cycle later. Motion capture sometimes has one lazy arm (the
+ * actor held something, or tired); in a symmetric gait the arms mirror each other
+ * half a step apart, so the good arm fully defines the other.
+ */
+export function symmetrizeArms(clip: NormalizedClip, from: 'left' | 'right'): NormalizedClip {
+  const B = clip.bones.length;
+  const idx = new Map(clip.bones.map((b, i) => [b, i]));
+  const rotations = clip.rotations.slice();
+  const N = clip.frames;
+  const half = Math.round(N / 2);
+  for (let i = 0; i < B; i++) {
+    const m = ARM.exec(clip.bones[i]);
+    if (!m || m[1] === from) continue;
+    const src = idx.get(mirrorBoneName(clip.bones[i]));
+    if (src === undefined) continue;
+    for (let f = 0; f < N; f++) {
+      const o = (((f + half) % N) * B + src) * 4;
+      // Reflection across the YZ plane, as in mirrorClip.
+      rotations[(f * B + i) * 4] = clip.rotations[o];
+      rotations[(f * B + i) * 4 + 1] = -clip.rotations[o + 1];
+      rotations[(f * B + i) * 4 + 2] = -clip.rotations[o + 2];
+      rotations[(f * B + i) * 4 + 3] = clip.rotations[o + 3];
+    }
+  }
+  return { ...clip, rotations };
+}
+
 export function clipDuration(clip: NormalizedClip): number {
   return clip.frames > 1 ? (clip.frames - 1) / clip.fps : 0;
 }
