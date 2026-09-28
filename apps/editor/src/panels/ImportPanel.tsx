@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { FilePicker, Notes, Section, Seg } from '../components/ui';
+import { MeshyImport } from '../components/MeshyImport';
 
 export function DropZone() {
   const loadFromFiles = useStore((s) => s.loadFromFiles);
@@ -60,6 +61,7 @@ export function ImportPanel() {
         <p>Bring in a static model from Meshy.ai (or any humanoid mesh).</p>
       </div>
       <DropZone />
+      <MeshyImport />
       {report && file && (
         <>
           <Section title="What is it?">

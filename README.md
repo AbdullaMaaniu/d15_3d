@@ -2,7 +2,7 @@
 
 **Turn static Meshy.ai models into rigged, animated characters for three.js, entirely in the browser.**
 
-Drop in a GLB/FBX/OBJ from Meshy (or any humanoid mesh), and RigForge will:
+Drop in a GLB/FBX/OBJ from Meshy (or any humanoid mesh), or import straight from your Meshy.ai account with an API key, and RigForge will:
 
 1. **Clean & orient** it: merges parts, fixes degenerate triangles, stands it upright facing +Z at real-world scale.
 2. **Auto-rig** it: detects joints (T- or A-pose), including **15 finger bones per hand**, fits a VRM-compatible humanoid skeleton and computes skin weights with **geodesic voxel binding**, which is robust to the open, self-intersecting meshes AI generators produce.
@@ -33,6 +33,14 @@ Rig a whole folder of exports without opening the editor:
 pnpm --filter @rigforge/cli build
 node packages/cli/dist/cli.js rig exports/*.glb -o rigged/ --clips idle,walk,run,wave
 node packages/cli/dist/cli.js rig dog.glb -t quadruped
+```
+
+Or pull models straight from your Meshy.ai account:
+
+```bash
+export MESHY_API_KEY=msy_...
+node packages/cli/dist/cli.js meshy list
+node packages/cli/dist/cli.js meshy rig <task-id> --clips all
 ```
 
 See [`packages/cli`](packages/cli) for every option.
@@ -122,8 +130,8 @@ The compiled WASM module is committed, so JavaScript-only contributors don't nee
 ## Roadmap
 
 - **Done:** humanoid pipeline with finger bones, presets, retargeting, optimized export, three.js/R3F runtime; weight painting, keyframe editor, clip trimming, prop rigs, project files and autosave; state machines, layers, root motion and foot IK in the runtime.
-- **Also done:** quadruped template with gaits, custom creature skeletons, CLI batch mode.
-- **Later:** Meshy API import, procedural secondary motion, and a pluggable AI text-to-motion provider.
+- **Also done:** quadruped template with gaits, custom creature skeletons, CLI batch mode, Meshy API import.
+- **Later:** procedural secondary motion (spring bones), and a pluggable AI text-to-motion provider.
 
 ## Credits & licenses
 

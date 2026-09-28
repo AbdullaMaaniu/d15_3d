@@ -1,4 +1,7 @@
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { MeshyClient } from '@rigforge/core';
 import { parseArgs } from 'node:util';
 import { createNodeIO, loadPresets, outputPath, runJob, type JobResult, type RigJob } from './run';
 
@@ -8,6 +11,8 @@ Usage
   rigforge rig <input.glb...> [options]     Rig one or more models
   rigforge clips [--type humanoid|quadruped] List available animation clips
   rigforge info <input.glb>                  Show what's in a file
+  rigforge meshy list                        List your finished Meshy.ai models
+  rigforge meshy rig <task-id...> [options]  Download Meshy models and rig them
 
 Options (rig)
   -o, --out <path>         Output file, or directory for several inputs
@@ -19,6 +24,7 @@ Options (rig)
   -p, --preset <name>      web (default), mobile or lossless
       --resolution <n>     Skinning voxel resolution (default 192)
       --report <file.json> Write a JSON report of every job
+      --key <key>          Meshy API key (or set MESHY_API_KEY)
   -h, --help               Show this help
 `;
 
@@ -49,6 +55,7 @@ export async function main(argv: string[]): Promise<number> {
       preset: { type: 'string', short: 'p', default: 'web' },
       resolution: { type: 'string' },
       report: { type: 'string' },
+      key: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -84,8 +91,39 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  if (command !== 'rig') return fail(`Unknown command "${command}". Try: rigforge --help`);
-  if (!positionals.length) return fail('rig needs at least one input .glb/.gltf file.');
+  let inputs = positionals;
+  let cleanup: string | null = null;
+  if (command === 'meshy') {
+    const key = values.key ?? process.env.MESHY_API_KEY;
+    if (!key) return fail('Set MESHY_API_KEY or pass --key (find your key under API settings on meshy.ai).');
+    const client = new MeshyClient(key);
+    const [sub, ...ids] = positionals;
+    try {
+      if (sub === 'list') {
+        const models = await client.listModels({ pageSize: 50 });
+        if (!models.length) console.log('No finished models found.');
+        for (const m of models) {
+          const when = m.createdAt ? new Date(m.createdAt).toISOString().slice(0, 10) : '          ';
+          console.log(`${m.id}  ${when}  ${m.kind.padEnd(17)} ${(m.prompt ?? '').slice(0, 60)}`);
+        }
+        return 0;
+      }
+      if (sub !== 'rig' || !ids.length) return fail('Usage: rigforge meshy list | rigforge meshy rig <task-id...>');
+      cleanup = await mkdtemp(join(tmpdir(), 'rigforge-meshy-'));
+      inputs = [];
+      for (const id of ids) {
+        console.log(`↓ downloading Meshy task ${id}`);
+        const task = await client.findTask(id);
+        const file = join(cleanup, `${id}.glb`);
+        await writeFile(file, new Uint8Array(await client.downloadGlb(task)));
+        inputs.push(file);
+      }
+      if (!values.out) values.out = process.cwd();
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  } else if (command !== 'rig') return fail(`Unknown command "${command}". Try: rigforge --help`);
+  if (!inputs.length) return fail('rig needs at least one input .glb/.gltf file.');
   const preset = values.preset as RigJob['preset'];
   if (!['web', 'mobile', 'lossless'].includes(preset)) return fail(`Unknown --preset "${preset}".`);
   const clips = !values.clips ? undefined : values.clips === 'all' ? 'all' : values.clips.split(',').map((s) => s.trim()).filter(Boolean);
@@ -97,8 +135,8 @@ export async function main(argv: string[]): Promise<number> {
 
   const results: JobResult[] = [];
   let failed = 0;
-  for (const input of positionals) {
-    const output = await outputPath(input, values.out, positionals.length > 1);
+  for (const input of inputs) {
+    const output = await outputPath(input, values.out, inputs.length > 1 || (command === 'meshy' && !/\.gl(b|tf)$/i.test(values.out ?? '')));
     console.log(`▸ ${input}`);
     try {
       const r = await runJob(
@@ -124,7 +162,8 @@ export async function main(argv: string[]): Promise<number> {
     }
   }
   if (values.report) await writeFile(values.report, JSON.stringify(results, null, 2));
-  if (positionals.length > 1) console.log(`\n${results.length} rigged, ${failed} failed.`);
+  if (inputs.length > 1) console.log(`\n${results.length} rigged, ${failed} failed.`);
+  if (cleanup) await rm(cleanup, { recursive: true, force: true });
   return failed ? 1 : 0;
 }
 

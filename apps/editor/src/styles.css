@@ -165,3 +165,9 @@ pre.code { margin: 0; background: #0d0f13; border: 1px solid var(--line); border
 .timeline .key.mine { background: var(--accent); }
 
 .grid2 .text, .grid3 .text { width: 100%; }
+
+.meshy-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; max-height: 320px; overflow-y: auto; }
+.meshy-item { display: flex; flex-direction: column; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: #12151a; cursor: pointer; text-align: left; }
+.meshy-item:hover:not(:disabled) { border-color: var(--accent); }
+.meshy-item img, .meshy-ph { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 5px; background: #0d0f13; display: grid; place-items: center; color: var(--faint); font-size: 11px; }
+.meshy-name { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

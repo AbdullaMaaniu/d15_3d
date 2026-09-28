@@ -44,3 +44,4 @@ export { createQuadrupedMannequin } from './mesh/mannequin';
 export { quadrupedGaits, type GaitClip, type GaitId } from './anim/gaits';
 export { creatureDefs, autoTails, boneChain, mirrorSubtree, isLeaf, type CreatureBone } from './rig/creature';
 export { rigDocument, type RigDocumentOptions, type RigDocumentReport } from './export/document';
+export { MeshyClient, MeshyError, normalizeTask, type MeshyKind, type MeshyTask } from './meshy';

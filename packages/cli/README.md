@@ -10,6 +10,8 @@ rigforge rig dog.glb -t quadruped --clips walk,trot   # animals get procedural g
 rigforge rig hero.glb -p lossless --report report.json
 rigforge clips                                        # list clip ids (add -t quadruped for gaits)
 rigforge info hero.rigged.glb
+MESHY_API_KEY=msy_... rigforge meshy list             # your finished Meshy.ai models
+MESHY_API_KEY=msy_... rigforge meshy rig <task-id>    # download and rig in one go
 ```
 
 Options: `--height <m>`, `--no-fingers`, `--resolution <n>` (skinning voxel resolution), `-p web|mobile|lossless`.

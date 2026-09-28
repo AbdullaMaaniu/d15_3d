@@ -52,3 +52,34 @@ describe('rigforge CLI', () => {
     err.mockRestore();
   });
 });
+
+describe('rigforge meshy', () => {
+  it('lists and rigs Meshy models (mocked API)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rigforge-'));
+    const src = await writeModel(dir, 'src.glb', createMannequin({ pose: 'A', detail: 8 }).geometry);
+    const glb = readFileSync(src);
+    const task = { id: 'task123', status: 'SUCCEEDED', prompt: 'a knight', created_at: Date.UTC(2026, 8, 1), model_urls: { glb: 'https://assets.meshy.ai/task123.glb' } };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.startsWith('https://api.meshy.ai/openapi/v2/text-to-3d?')) return Response.json([task]);
+      if (u.startsWith('https://api.meshy.ai/openapi/v2/text-to-3d/task123')) return Response.json(task);
+      if (u.startsWith('https://api.meshy.ai')) return Response.json([]);
+      if (u === 'https://assets.meshy.ai/task123.glb') return new Response(glb);
+      return new Response('', { status: 404 });
+    }));
+    const lines: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...a) => void lines.push(a.join(' ')));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.MESHY_API_KEY = 'msy_test';
+    expect(await main(['meshy', 'list'])).toBe(0);
+    expect(lines.join('\n')).toContain('task123  2026-09-01  text-to-3d');
+    expect(await main(['meshy', 'rig', 'task123', '-o', join(dir, 'knight.glb'), '--clips', 'idle', '--resolution', '96', '-p', 'lossless'])).toBe(0);
+    const doc = await new NodeIO().read(join(dir, 'knight.glb'));
+    expect(doc.getRoot().listSkins().length).toBe(1);
+    delete process.env.MESHY_API_KEY;
+    expect(await main(['meshy', 'list'])).toBe(2);
+    log.mockRestore();
+    err.mockRestore();
+    vi.unstubAllGlobals();
+  });
+});
