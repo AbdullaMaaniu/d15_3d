@@ -98,7 +98,10 @@ function HumanoidRigPanel() {
     <>
       <div>
         <h2>Joints</h2>
-        <p>Drag the markers so each sits inside the body at the joint. Blue is the {quad ? "animal's" : "character's"} left, orange its right.</p>
+        <p>
+          Drag the markers so each sits inside the body at the joint. Each joint has its own colour (see the key in the corner of the view). L and R are the{' '}
+          {quad ? "animal's" : "character's"} own left and right, so as it faces you its left is on your right.
+        </p>
       </div>
       {detection && !busy && (
         <Section title={quad ? 'Detected (quadruped)' : `Detected (${detection.pose}-pose)`} right={<span className="tag">{Math.round(detection.confidence * 100)}% confident</span>}>
@@ -116,6 +119,7 @@ function HumanoidRigPanel() {
         {fingers && !quad && (
           <Check checked={showFingerMarkers} onChange={(v) => set('showFingerMarkers', v)}>Show finger markers</Check>
         )}
+
         <div className="grid3">
           <button className="btn small" onClick={() => symmetrize('left')} disabled={!joints}>Left → right</button>
           <button className="btn small" onClick={() => symmetrize('right')} disabled={!joints}>Right → left</button>

@@ -212,6 +212,8 @@ interface State {
   wireframe: boolean;
   /** Live rigged preview while placing joints. */
   rigPreview: boolean;
+  /** Marker under the pointer (joint name, or name + ':tail'), shared with the colour key. */
+  hoverJoint: string | null;
 }
 
 interface Actions {
@@ -372,6 +374,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   originalPrepared: null,
   wireframe: false,
   rigPreview: true,
+  hoverJoint: null,
 
   set: (key, value) => set({ [key]: value } as any),
   setError: (error) => set({ error }),

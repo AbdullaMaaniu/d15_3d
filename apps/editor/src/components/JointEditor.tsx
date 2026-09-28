@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useThree, type ThreeEvent } from '@react-three/fiber';
 import { Line } from '@react-three/drei';
 import { Plane, Raycaster, Vector2, Vector3 } from 'three';
 import { skeletonDefs, useStore } from '../store';
+import { jointInfo } from '../lib/jointInfo';
 
 type V3 = [number, number, number];
 
+// Bone lines keep the side colours; markers get a colour per joint type (see jointInfo).
 const COLORS = { left: '#38bdf8', right: '#fb923c', center: '#facc15', selected: '#ffffff' };
 
 function colorOf(name: string): string {
@@ -28,7 +30,9 @@ export function JointEditor() {
   const moveJoint = useStore((s) => s.moveJoint);
   const setStore = useStore((s) => s.set);
   const { camera, gl, controls } = useThree();
-  const [hover, setHover] = useState<string | null>(null);
+  // Shared with the colour key: hovering a marker lights up its entry, and vice versa.
+  const hover = useStore((s) => s.hoverJoint);
+  const setHover = (key: string | null) => setStore('hoverJoint', key);
   const drag = useRef<{ name: string; tail: boolean; plane: Plane } | null>(null);
 
   const rigType = useStore((s) => s.rigType);
@@ -117,7 +121,7 @@ export function JointEditor() {
             }}
           >
             {m.tail ? <octahedronGeometry args={[r * 0.8]} /> : <sphereGeometry args={[m.small ? r * 0.6 : r, 16, 12]} />}
-            <meshBasicMaterial color={isSel || isHover ? COLORS.selected : colorOf(m.name)} depthTest={false} transparent opacity={0.95} />
+            <meshBasicMaterial color={isSel || isHover ? COLORS.selected : m.tail ? colorOf(m.name) : jointInfo(m.name).color} depthTest={false} transparent opacity={0.95} />
           </mesh>
         );
       })}

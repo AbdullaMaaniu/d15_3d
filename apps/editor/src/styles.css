@@ -208,3 +208,17 @@ pre.code { margin: 0; background: #0d0f13; border: 1px solid var(--line); border
   .rig-preview { top: 8px; right: 8px; width: 46%; height: 55%; }
   .rig-preview-open { top: 8px; right: 8px; }
 }
+
+/* Joint colour key (Rig step) */
+.joint-key { display: flex; gap: 10px; background: rgba(23, 26, 32, 0.9); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; width: fit-content; }
+.joint-key .col { display: flex; flex-direction: column; gap: 1px; min-width: 76px; }
+.joint-key .title { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); margin-bottom: 3px; }
+.joint-key button { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 2px 4px; border-radius: 4px; border: 0; background: transparent; color: var(--muted); cursor: pointer; text-align: left; }
+.joint-key button:hover, .joint-key button.hover { color: var(--text); background: rgba(248, 250, 252, 0.14); outline: 1px solid rgba(248, 250, 252, 0.5); }
+.joint-key button.on { background: #f8fafc; color: #0f1116; }
+.joint-key i { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+@media (max-width: 860px) {
+  .joint-key { gap: 6px; padding: 6px; }
+  .joint-key .col { min-width: 0; }
+  .joint-key button { font-size: 10px; padding: 1px 2px; }
+}
