@@ -208,6 +208,9 @@ function prepareSkinWeights(
       }
     }
 
+    // After smoothing, which would blur the seam back out; its own blend band keeps it smooth.
+    splitShoulders(dense, pts, defs, map);
+
     // Top-N influences per welded vertex (partial selection; ties keep the lower bone
     // index, like a stable sort), then expand to all vertices.
     const wIndex = new Uint16Array(welded * 4);
@@ -297,4 +300,64 @@ function buildAdjacency(index: Uint32Array, ids: Uint32Array, welded: number) {
   }
   for (let w = 0; w < welded; w++) offsets[w + 1] += offsets[w];
   return { offsets, neighbors: neighbors.subarray(0, n) };
+}
+
+/**
+ * A clean seam at each shoulder. Distance-based weights leave everything around the
+ * shoulder joint (a short sleeve, the top of the arm) shared between the torso and
+ * the arm, so a lowered arm drags half the sleeve along and the armpit caves in.
+ * Cut through the shoulder joint square to the upper arm: arm-side vertices that
+ * already lean on the arm go with it entirely; body-side vertices give their upper
+ * arm weight to the collarbone. A short blend band keeps the seam from creasing.
+ * `dense` holds normalized rows of B weights.
+ */
+export function splitShoulders(dense: Float32Array, pts: Float32Array, defs: readonly BoneDef[], map: JointMap): void {
+  const B = defs.length;
+  const index = new Map(defs.map((d, i) => [d.name, i]));
+  const childrenOf = new Map<string, string[]>();
+  for (const d of defs) if (d.parent) childrenOf.set(d.parent, [...(childrenOf.get(d.parent) ?? []), d.name]);
+  const count = pts.length / 3;
+  for (const side of ['left', 'right']) {
+    const ua = index.get(`${side}UpperArm`), collar = index.get(`${side}Shoulder`) ?? index.get(defs.find((d) => d.name === `${side}UpperArm`)?.parent ?? '');
+    const P = map.joints[`${side}UpperArm`], E = map.joints[`${side}LowerArm`];
+    if (ua === undefined || collar === undefined || !P || !E) continue;
+    // The arm: the upper arm and everything below it.
+    const arm = new Uint8Array(B);
+    const stack = [`${side}UpperArm`];
+    while (stack.length) {
+      const n = stack.pop()!;
+      const i = index.get(n);
+      if (i !== undefined) arm[i] = 1;
+      stack.push(...(childrenOf.get(n) ?? []));
+    }
+    const len = Math.hypot(E[0] - P[0], E[1] - P[1], E[2] - P[2]);
+    if (!(len > 0)) continue;
+    const a = [(E[0] - P[0]) / len, (E[1] - P[1]) / len, (E[2] - P[2]) / len];
+    const band = 0.12 * len, reach = 0.8 * len;
+    for (let w = 0; w < count; w++) {
+      const dx = pts[w * 3] - P[0], dy = pts[w * 3 + 1] - P[1], dz = pts[w * 3 + 2] - P[2];
+      const along = dx * a[0] + dy * a[1] + dz * a[2];
+      if (along > len || along < -reach) continue;
+      const radial = Math.hypot(dx - along * a[0], dy - along * a[1], dz - along * a[2]);
+      if (radial > reach) continue;
+      const row = w * B;
+      let armW = 0;
+      for (let b = 0; b < B; b++) if (arm[b]) armW += dense[row + b];
+      const x = Math.max(0, Math.min(1, (along + band) / (2 * band)));
+      const t = x * x * (3 - 2 * x); // 0 on the body side, 1 on the arm side
+      if (armW >= 0.2 && armW < 1) {
+        // Hand the body's share to the upper arm.
+        const move = t * (1 - armW);
+        const keep = 1 - move / (1 - armW);
+        for (let b = 0; b < B; b++) if (!arm[b]) dense[row + b] *= keep;
+        dense[row + ua] += move;
+      }
+      if (t < 1) {
+        // Body side of the cut: the torso stays with the body.
+        const move = (1 - t) * dense[row + ua];
+        dense[row + ua] -= move;
+        dense[row + collar] += move;
+      }
+    }
+  }
 }

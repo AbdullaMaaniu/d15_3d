@@ -1,4 +1,4 @@
-import { SkinnedMesh, Vector3, type Object3D } from 'three';
+import { Quaternion, SkinnedMesh, Vector3, type Object3D } from 'three';
 import type { BoneMap } from './bonemap';
 
 /** Minimum angle (radians) each arm must keep away from straight down to stay outside the body. */
@@ -7,22 +7,8 @@ export interface ArmClearance {
   right: number;
 }
 
-const TORSO = new Set(['hips', 'spine', 'chest', 'upperChest', 'leftUpperLeg', 'rightUpperLeg']);
+const TORSO = new Set(['hips', 'spine', 'chest', 'upperChest', 'leftShoulder', 'rightShoulder', 'leftUpperLeg', 'rightUpperLeg']);
 const MAX = (50 * Math.PI) / 180;
-
-function percentile(values: number[], p: number): number {
-  if (!values.length) return 0;
-  values.sort((a, b) => a - b);
-  return values[Math.min(values.length - 1, Math.floor(values.length * p))];
-}
-
-const _ab = new Vector3();
-const _ap = new Vector3();
-function segmentDistance(p: Vector3, a: Vector3, b: Vector3): number {
-  _ab.subVectors(b, a);
-  const t = Math.max(0, Math.min(1, _ap.subVectors(p, a).dot(_ab) / Math.max(1e-12, _ab.lengthSq())));
-  return _ap.sub(_ab.multiplyScalar(t)).length();
-}
 
 /**
  * How far out a hanging arm has to swing to clear the torso, measured on the skinned
@@ -30,8 +16,9 @@ function segmentDistance(p: Vector3, a: Vector3, b: Vector3): number {
  * jacket, a big belly) the same "arms down" pose sinks the arms into the hips.
  *
  * The body is upright in the rig's space (Y up, facing +Z, left is +X). For each side
- * it finds the smallest angle from vertical, in the frontal plane around the shoulder,
- * at which an arm as thick as the model's own sleeve misses the torso's vertices.
+ * it swings the model's own arm (sleeve included, which can be much wider than the
+ * arm) down around the shoulder joint and finds the smallest angle from vertical, in
+ * the frontal plane, at which it stays outside the torso.
  */
 export function measureArmClearance(root: Object3D, map: BoneMap): ArmClearance {
   let mesh: SkinnedMesh | undefined;
@@ -83,35 +70,84 @@ export function armClearance(
   };
 
   const result = { left: 0, right: 0 };
+  const ls = vec('leftUpperArm'), rs = vec('rightUpperArm');
+  if (!ls || !rs) return result;
+  const cx = (ls.x + rs.x) / 2;
+  const d = new Vector3();
+  const q = new Quaternion();
+  const p = new Vector3();
   for (const side of ['left', 'right'] as const) {
     const s = side === 'left' ? 1 : -1;
     const shoulder = vec(`${side}UpperArm`), elbow = vec(`${side}LowerArm`), wrist = vec(`${side}Hand`);
     if (!shoulder || !elbow || !wrist) continue;
     const upper = shoulder.distanceTo(elbow), reach = upper + elbow.distanceTo(wrist);
-    // The sleeve's thickness.
-    const radii: number[] = [];
-    for (let v = 0; v < count; v++) {
-      if (owner[v] === `${side}UpperArm`) radii.push(segmentDistance(vertex(v), shoulder, elbow));
-      else if (owner[v] === `${side}LowerArm`) radii.push(segmentDistance(vertex(v), elbow, wrist));
-    }
-    const r = percentile(radii, 0.75);
-    if (!(r > 0)) continue;
-    // Angle each torso vertex needs the arm to clear it.
-    const needs: number[] = [];
+    const rest = elbow.clone().sub(shoulder).normalize();
+    const armBone = new RegExp(`^${side}(UpperArm|LowerArm|Hand|Thumb|Index|Middle|Ring|Little)`);
+    // The torso's outer surface on this side per height row (with its front-to-back
+    // extent), rows between vertex rings filled in from their neighbours.
+    const cell = 0.1 * upper;
+    let y0 = Infinity, y1 = -Infinity;
     for (let v = 0; v < count; v++) {
       if (!TORSO.has(owner[v])) continue;
-      const p = vertex(v);
-      const dz = p.z - shoulder.z;
-      if (Math.abs(dz) >= r) continue;
-      const out = s * (p.x - shoulder.x), down = shoulder.y - p.y;
-      // Skip the armpit, where any arm meets the body.
-      if (down < 0.3 * upper) continue;
-      const len = Math.hypot(out, down);
-      if (len > reach) continue;
-      const clear = Math.sqrt(r * r - dz * dz);
-      needs.push(Math.atan2(out, down) + Math.asin(Math.min(1, clear / len)));
+      y0 = Math.min(y0, positions[v * 3 + 1]);
+      y1 = Math.max(y1, positions[v * 3 + 1]);
     }
-    result[side] = Math.max(0, Math.min(MAX, percentile(needs, 0.97)));
+    if (!(y1 > y0)) continue;
+    const rows = Math.floor((y1 - y0) / cell) + 1;
+    const wall = new Float64Array(rows).fill(-Infinity);
+    const zLo = new Float64Array(rows).fill(Infinity), zHi = new Float64Array(rows).fill(-Infinity);
+    for (let v = 0; v < count; v++) {
+      if (!TORSO.has(owner[v])) continue;
+      const r = Math.floor((positions[v * 3 + 1] - y0) / cell);
+      wall[r] = Math.max(wall[r], s * (positions[v * 3] - cx));
+      zLo[r] = Math.min(zLo[r], positions[v * 3 + 2]);
+      zHi[r] = Math.max(zHi[r], positions[v * 3 + 2]);
+    }
+    for (let r = 0, prev = -1; r < rows; r++) {
+      if (wall[r] === -Infinity) continue;
+      for (let g = prev + 1; prev >= 0 && g < r; g++) {
+        const t = (g - prev) / (r - prev);
+        wall[g] = wall[prev] + t * (wall[r] - wall[prev]);
+        zLo[g] = Math.min(zLo[prev], zLo[r]);
+        zHi[g] = Math.max(zHi[prev], zHi[r]);
+      }
+      prev = r;
+    }
+    // The arm's own surface (a sleeve can be much wider than the arm), past the armpit.
+    const arm: Vector3[] = [];
+    for (let v = 0; v < count; v++) {
+      if (!armBone.test(owner[v])) continue;
+      const rel = vertex(v).clone().sub(shoulder);
+      const along = rel.dot(rest);
+      if (along > 0.15 * upper && along < reach) arm.push(rel);
+    }
+    if (arm.length < 20) continue;
+    // Swing the straight arm down in the frontal plane until almost none of it is inside the torso.
+    const tol = 0.03 * upper;
+    let need = MAX;
+    for (let deg = 0; deg <= 50; deg++) {
+      const th = (deg * Math.PI) / 180;
+      q.setFromUnitVectors(rest, d.set(s * Math.sin(th), -Math.cos(th), 0));
+      let inside = 0;
+      for (const rel of arm) {
+        p.copy(rel).applyQuaternion(q).add(shoulder);
+        const r = Math.floor((p.y - y0) / cell);
+        if (r < 0 || r >= rows || p.z < zLo[r] || p.z > zHi[r]) continue;
+        if (s * (p.x - cx) < wall[r] - tol) inside++;
+      }
+      if (inside <= 0.01 * arm.length) {
+        need = th;
+        break;
+      }
+    }
+    result[side] = need;
+  }
+  // A symmetric body gets the same spacing on both sides (the wider one), so one
+  // noisier measurement doesn't leave the character lopsided.
+  const le = vec('leftLowerArm'), re = vec('rightLowerArm');
+  const upper = le ? ls.distanceTo(le) : 0;
+  if (le && re && upper > 0 && Math.hypot(ls.x - cx + (rs.x - cx), ls.y - rs.y, ls.z - rs.z) < 0.15 * upper && Math.hypot(le.x - cx + (re.x - cx), le.y - re.y, le.z - re.z) < 0.15 * upper) {
+    result.left = result.right = Math.max(result.left, result.right);
   }
   return result;
 }

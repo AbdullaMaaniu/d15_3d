@@ -121,4 +121,46 @@ describe('skin weights', async () => {
     for (let i = 0; i < n; i++) if (a.skinIndex[i * 4] === b.skinIndex[i * 4]) same++;
     expect(same / n).toBeGreaterThan(0.99);
   });
+
+  it('splits the shoulder: the sleeve goes with the arm, the side of the body stays', () => {
+    const w = computeSkinWeights(positions, index, defs, detected, { kernels: wasm, resolution: 128 });
+    const names = defs.map((d) => d.name);
+    const P = detected.joints.leftUpperArm, E = detected.joints.leftLowerArm;
+    const len = Math.hypot(E[0] - P[0], E[1] - P[1], E[2] - P[2]);
+    const a = [(E[0] - P[0]) / len, (E[1] - P[1]) / len, (E[2] - P[2]) / len];
+    const arm = /^left(UpperArm|LowerArm|Hand|Thumb|Index|Middle|Ring|Little)/;
+    let armSide = 0, bodySide = 0, minArm = 1, maxUpper = 0, nearSum = 0, near = 0;
+    for (let v = 0; v < positions.length / 3; v++) {
+      const d = [positions[v * 3] - P[0], positions[v * 3 + 1] - P[1], positions[v * 3 + 2] - P[2]];
+      const along = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+      const radial = Math.hypot(d[0] - along * a[0], d[1] - along * a[1], d[2] - along * a[2]);
+      if (radial > 0.8 * len || along > len || along < -0.8 * len) continue;
+      let armW = 0, upperW = 0;
+      for (let k = 0; k < 4; k++) {
+        const n = names[w.skinIndex[v * 4 + k]], x = w.skinWeight[v * 4 + k];
+        if (arm.test(n)) armW += x;
+        if (n === 'leftUpperArm') upperW += x;
+      }
+      if (along > 0.05 * len && along < 0.3 * len && armW > 0.2) {
+        nearSum += armW;
+        near++;
+      }
+      if (along > 0.3 * len && armW > 0.2) {
+        armSide++;
+        minArm = Math.min(minArm, armW);
+      }
+      if (along < -0.3 * len) {
+        bodySide++;
+        maxUpper = Math.max(maxUpper, upperW);
+      }
+    }
+    expect(armSide).toBeGreaterThan(20);
+    expect(bodySide).toBeGreaterThan(20);
+    // Past the cut, anything that belongs to the arm belongs to it entirely;
+    // well inside it, the upper arm doesn't pull on the body.
+    expect(minArm).toBeGreaterThan(0.99);
+    expect(maxUpper).toBeLessThan(0.01);
+    // Near the joint the arm clearly leads (distance weights alone give about 0.68 here).
+    expect(nearSum / near).toBeGreaterThan(0.75);
+  });
 });
