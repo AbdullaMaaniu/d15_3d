@@ -22,7 +22,7 @@ import {
   splitParts,
 } from '@rigforge/core';
 import { accessoryDefs, type ClipEntry, type RigType, type useStore } from '../store';
-import type { SpringConfig } from '@rigforge/three';
+import type { ControllerSetup, SpringConfig } from '@rigforge/three';
 
 type StoreState = ReturnType<typeof useStore.getState>;
 
@@ -50,6 +50,7 @@ interface ProjectFile {
   creatureBones?: CreatureBone[];
   extraBones?: CreatureBone[];
   springs?: SpringConfig;
+  controller?: ControllerSetup | null;
   /** Whether the prop rig was built (props don't store weights: they're rigid). */
   propBuilt?: boolean;
 }
@@ -108,6 +109,7 @@ export async function saveProject(s: StoreState): Promise<Blob> {
     creatureBones: s.creatureBones,
     extraBones: s.extraBones,
     springs: s.springs,
+    controller: s.controller,
     propBuilt: s.rigType === 'prop' && !!built,
     rig: built && s.rigType !== 'prop' && s.joints
       ? {
@@ -194,6 +196,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     creatureBones: file.creatureBones ?? [],
     extraBones: file.extraBones ?? [],
     springs: file.springs ?? { chains: [], colliders: [] },
+    controller: file.controller ?? null,
   });
   const baseDefs = (defs: readonly import('@rigforge/core').BoneDef[]) => [...defs, ...accessoryDefs(file.extraBones ?? [])];
 

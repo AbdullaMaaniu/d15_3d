@@ -71,7 +71,7 @@ import presetPack from '@rigforge/presets/clips.json';
 import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleCreature, loadSampleProp, type LoadedFile } from './lib/loaders';
 import { computeWeights, detectJoints, detectQuadrupedJoints, type WeightSettings } from './lib/rigClient';
 import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
-import type { SpringChainDef, SpringColliderDef, SpringConfig } from '@rigforge/three';
+import { guessController, type ControllerSetup, type SpringChainDef, type SpringColliderDef, type SpringConfig } from '@rigforge/three';
 
 export type Step = 'import' | 'orient' | 'rig' | 'animate' | 'export';
 export const STEPS: Step[] = ['import', 'orient', 'rig', 'animate', 'export'];
@@ -190,6 +190,8 @@ interface State {
   selectedBone: string | null;
 
   paint: PaintSettings;
+  /** Clip roles for games (null = suggested from the clips). */
+  controller: ControllerSetup | null;
   keyEdit: KeyEditState;
   /** Bumped whenever skin weights change, so views refresh. */
   weightsVersion: number;
@@ -343,6 +345,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   showFingerMarkers: false,
   selectedBone: null,
   paint: { active: false, mode: 'add', radius: 0.06, strength: 0.35, mirror: true },
+  controller: null,
   keyEdit: { clipId: null, bone: null, mode: 'rotate', autoKey: true },
   weightsVersion: 0,
   paintUndo: 0,
@@ -1053,6 +1056,33 @@ function arrays(geometry: BufferGeometry) {
     ? new Uint32Array(geometry.index.array as ArrayLike<number>)
     : Uint32Array.from({ length: geometry.attributes.position.count }, (_, i) => i);
   return { positions, index };
+}
+
+/** Ground speed (m/s) a clip represents: horizontal hips travel over its duration, at this rig's scale. */
+export function clipSpeed(entry: ClipEntry): number {
+  const s = useStore.getState();
+  if (entry.propKeys) {
+    const gait = s.joints && s.rigType === 'quadruped' ? quadrupedGaits(s.joints).find((g) => entry.source.includes(g.description)) : undefined;
+    return gait?.speed ?? 0;
+  }
+  const n = entry.normalized;
+  if (!s.binding || n.frames < 2) return 0;
+  const dx = n.hips[(n.frames - 1) * 3] - n.hips[0];
+  const dz = n.hips[(n.frames - 1) * 3 + 2] - n.hips[2];
+  return (Math.hypot(dx, dz) * s.binding.hipsHeight) / ((n.frames - 1) / n.fps);
+}
+
+/** Controller roles guessed from clip names, with speeds measured from the clips. */
+export function suggestController(): ControllerSetup {
+  const { clips } = useStore.getState();
+  const setup = guessController(clips.map((c) => c.name));
+  setup.locomotion = setup.locomotion.map(([speed, name], i) => {
+    if (i === 0) return [0, name];
+    const measured = clipSpeed(clips.find((c) => c.name === name)!);
+    return [measured > 0.2 ? +measured.toFixed(2) : speed, name];
+  });
+  setup.locomotion.sort((a, b) => a[0] - b[0]);
+  return setup;
 }
 
 /** Spring chains for every accessory chain (and a quadruped's tail), with body colliders. */

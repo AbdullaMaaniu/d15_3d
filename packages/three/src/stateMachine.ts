@@ -237,3 +237,52 @@ export class AnimationStateMachine {
     });
   }
 }
+
+/**
+ * Which clip plays which role, exported by RigForge in node extras
+ * (`rigforge.controller`) so games get a working controller with no setup.
+ */
+export interface ControllerSetup {
+  /** [speed m/s, clip] pairs, ascending; the first is usually Idle at 0. */
+  locomotion: Array<[number, string]>;
+  jump?: string;
+  /** One-shot actions triggered by name, e.g. { attack: 'Punch', wave: 'Wave' }. */
+  actions?: Record<string, string>;
+}
+
+/** Guesses a controller setup from clip names (used when a file has none). */
+export function guessController(clipNames: string[]): ControllerSetup {
+  const find = (re: RegExp) => clipNames.find((n) => re.test(n));
+  const loco: Array<[number, string]> = [];
+  const idle = find(/idle|stand/i);
+  if (idle) loco.push([0, idle]);
+  const walk = find(/^walk$/i) ?? find(/walk(?!.*back)/i);
+  if (walk) loco.push([1.4, walk]);
+  const trot = find(/trot|jog/i);
+  if (trot) loco.push([2.6, trot]);
+  const run = find(/run|gallop|sprint/i);
+  if (run) loco.push([4, run]);
+  if (!loco.length && clipNames[0]) loco.push([0, clipNames[0]]);
+  const used = new Set(loco.map((l) => l[1]));
+  const jump = find(/jump/i);
+  if (jump) used.add(jump);
+  const actions: Record<string, string> = {};
+  for (const n of clipNames) if (!used.has(n)) actions[n.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')] = n;
+  return { locomotion: loco, jump, actions };
+}
+
+/** Builds a state machine from a controller setup: a speed blend, jump, and triggerable actions. */
+export function controllerStateMachine(setup: ControllerSetup): StateMachineDef {
+  const states: Record<string, StateDef> = {
+    move: setup.locomotion.length > 1 ? { blend: { param: 'speed', clips: setup.locomotion } } : { clip: setup.locomotion[0]?.[1] },
+  };
+  const transitions: TransitionDef[] = [];
+  const oneShot = (state: string, clip: string, trigger: string) => {
+    states[state] = { clip, loop: false };
+    transitions.push({ from: 'move', to: state, when: [{ trigger }], fade: 0.12 });
+    transitions.push({ from: state, to: 'move', exitTime: 0.92, fade: 0.2 });
+  };
+  if (setup.jump) oneShot('jump', setup.jump, 'jump');
+  for (const [name, clip] of Object.entries(setup.actions ?? {})) oneShot(`action:${name}`, clip, name);
+  return { initial: 'move', parameters: { speed: 0 }, states, transitions };
+}

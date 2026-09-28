@@ -10,7 +10,7 @@ function glbJson(buf: Buffer): any {
   return JSON.parse(buf.subarray(20, 20 + len).toString('utf8'));
 }
 
-test('accessory hair chain gets spring physics and ships in the GLB', async ({ page }, info) => {
+test('spring chains and the game controller setup ship in the GLB', async ({ page }, info) => {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto('/');
@@ -56,6 +56,9 @@ test('accessory hair chain gets spring physics and ships in the GLB', async ({ p
   await page.getByRole('button', { name: /Add animations/ }).click();
   await page.getByRole('button', { name: /Idle, Walk, Run, Jump/ }).click();
   await page.getByRole('button', { name: /^Export →/ }).click();
+  // Controller roles are suggested from the clip names; edit the run speed.
+  await expect(page.getByLabel('Jump clip')).toHaveValue('Jump');
+  await page.getByLabel('Speed of Run').fill('5');
   await page.getByRole('button', { name: 'Build GLB' }).click();
   const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: /Download .*\.glb/ }).click()]);
   const path = info.outputPath('hero.glb');
@@ -63,5 +66,9 @@ test('accessory hair chain gets spring physics and ships in the GLB', async ({ p
   const json = glbJson(readFileSync(path));
   const withSprings = json.nodes.find((n: any) => n.extras?.rigforge?.springs);
   expect(withSprings.extras.rigforge.springs.chains[0].bones).toEqual(['strandA1', 'strandA2', 'strandA3']);
+  const controller = withSprings.extras.rigforge.controller;
+  expect(controller.locomotion.map((l: [number, string]) => l[1])).toEqual(['Idle', 'Walk', 'Run']);
+  expect(controller.locomotion[2][0]).toBe(5);
+  expect(controller.jump).toBe('Jump');
   expect(errors).toEqual([]);
 });

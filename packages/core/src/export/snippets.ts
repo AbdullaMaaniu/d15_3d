@@ -4,6 +4,8 @@ export interface SnippetInput {
   clipNames: string[];
   /** Name of the clip to start with (defaults to an idle-like clip or the first). */
   initial?: string;
+  /** Exported controller roles, shown in the state-machine snippet. */
+  controller?: { locomotion: Array<[number, string]>; jump?: string; actions?: Record<string, string> };
 }
 
 export type SnippetKind = 'three' | 'r3f' | 'vanilla' | 'state-machine';
@@ -46,40 +48,30 @@ renderer.setAnimationLoop(() => {
 `;
   }
   if (kind === 'state-machine') {
-    const has = (re: RegExp) => input.clipNames.find((n) => re.test(n));
-    const idle = has(/idle/i) ?? initial;
-    const walk = has(/^walk$/i) ?? has(/walk/i);
-    const run = has(/run/i) ?? has(/gallop/i) ?? has(/trot/i);
-    const jump = has(/jump/i);
-    const blend = [[0, idle], ...(walk ? [[1.4, walk]] : []), ...(run ? [[4, run]] : [])]
-      .map(([t, n]) => `[${t}, '${n}']`)
-      .join(', ');
+    const c = input.controller;
+    const roles = c
+      ? [
+          `//   speed blend: ${c.locomotion.map(([v, n]) => `${n} @ ${v} m/s`).join(', ')}`,
+          c.jump ? `//   sm.trigger('jump') → ${c.jump}` : '',
+          ...Object.entries(c.actions ?? {}).map(([k, n]) => `//   sm.trigger('${k}') → ${n}`),
+        ].filter(Boolean).join('\n')
+      : '//   (roles guessed from clip names)';
+    const firstAction = Object.keys(c?.actions ?? {})[0];
     return `import * as THREE from 'three';
 import { loadCharacter } from '@rigforge/three';
 
 const character = await loadCharacter('${input.url}');
 scene.add(character.object);
 
-// Idle/walk/run blend by speed${jump ? ', plus a jump' : ''}. Clips: ${clips}
-const sm = character.stateMachine({
-  initial: 'move',
-  parameters: { speed: 0 },
-  states: {
-    move: { blend: { param: 'speed', clips: [${blend}] } },${jump ? `
-    jump: { clip: '${jump}', loop: false },` : ''}
-  },
-  transitions: [${jump ? `
-    { from: 'move', to: 'jump', when: [{ trigger: 'jump' }] },
-    { from: 'jump', to: 'move', exitTime: 0.9 },
-  ` : ''}],
-});
+// The controller setup ships inside the file:
+${roles}
+const sm = character.autoStateMachine();
 
-// Keep feet on uneven terrain and drive it from your controller:
-character.enableFootIK({ ground: [terrain] });
+character.enableFootIK({ ground: [terrain] }); // optional: feet follow uneven ground
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   sm.set('speed', player.velocity.length()); // meters per second
-  if (input.jumpPressed) sm.trigger('jump');
+  if (input.jumpPressed) sm.trigger('jump');${firstAction ? `\n  if (input.actionPressed) sm.trigger('${firstAction}');` : ''}
   character.update(clock.getDelta());
   renderer.render(scene, camera);
 });

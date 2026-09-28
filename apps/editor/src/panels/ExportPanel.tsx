@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { exportCharacter, generateSnippet, type SnippetKind } from '@rigforge/core';
-import { useStore } from '../store';
+import { suggestController, useStore } from '../store';
+import { ControllerSection } from './ControllerSection';
 import { Section, Seg, formatBytes } from '../components/ui';
 
 export function ExportPanel() {
@@ -15,7 +16,12 @@ export function ExportPanel() {
   const [copied, setCopied] = useState(false);
 
   const fileName = `${name || 'character'}.glb`;
-  const snippet = useMemo(() => generateSnippet(tab, { url: `/models/${fileName}`, clipNames: clips.map((c) => c.name) }), [tab, fileName, clips]);
+  const controllerSetting = useStore((s) => s.controller);
+  const snippet = useMemo(
+    () => generateSnippet(tab, { url: `/models/${fileName}`, clipNames: clips.map((c) => c.name), controller: controllerFor() }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tab, fileName, clips, controllerSetting],
+  );
 
   const run = async () => {
     if (!character) return;
@@ -33,7 +39,11 @@ export function ExportPanel() {
       character.root.updateMatrixWorld(true);
       // Spring bones ride along as node extras; @rigforge/three sets them up on load.
       const springs = useStore.getState().springs;
-      character.root.userData.rigforge = { ...(character.root.userData.rigforge ?? {}), springs: springs.chains.length ? springs : undefined };
+      character.root.userData.rigforge = {
+        ...(character.root.userData.rigforge ?? {}),
+        springs: springs.chains.length ? springs : undefined,
+        controller: controllerFor(),
+      };
       // Every clip at its chosen speed.
       const baked = clips.map((c) => {
         const clip = c.baked.clone();
@@ -93,6 +103,8 @@ export function ExportPanel() {
         </button>
       </Section>
 
+      <ControllerSection />
+
       {result && (
         <Section title="Result">
           <div className="sizes">
@@ -132,4 +144,13 @@ export function ExportPanel() {
       </Section>
     </>
   );
+}
+
+/** The controller roles to export: the user's edits if still valid, else the suggestion. */
+function controllerFor() {
+  const s = useStore.getState();
+  const names = new Set(s.clips.map((c) => c.name));
+  const c = s.controller;
+  if (c && c.locomotion.every(([, n]) => names.has(n)) && (!c.jump || names.has(c.jump)) && Object.values(c.actions ?? {}).every((n) => names.has(n))) return c;
+  return suggestController();
 }

@@ -14,7 +14,7 @@ import {
   Vector3,
   type WebGLRenderer,
 } from 'three';
-import { AnimationStateMachine, type StateMachineDef } from './stateMachine';
+import { AnimationStateMachine, controllerStateMachine, guessController, type ControllerSetup, type StateMachineDef } from './stateMachine';
 import { FootIK, type FootIKOptions } from './ik';
 import { SpringBones, type SpringConfig } from './springs';
 
@@ -273,6 +273,25 @@ export class Character {
     this.current = null;
     this.machine = new AnimationStateMachine((name) => this.actions.get(name) ?? this.findAction(name), def);
     return this.machine;
+  }
+
+  /**
+   * A ready-made controller: idle/walk/run blended by the \`speed\` parameter (m/s),
+   * plus \`trigger('jump')\` and one trigger per action. Uses the setup exported by
+   * RigForge when present, otherwise guesses from clip names.
+   */
+  autoStateMachine(setup?: ControllerSetup): AnimationStateMachine {
+    let found: ControllerSetup | undefined = setup;
+    if (!found) this.object.traverse((o) => { found ??= (o.userData?.rigforge as { controller?: ControllerSetup } | undefined)?.controller; });
+    const valid = (c: ControllerSetup | undefined) => c && c.locomotion?.every(([, n]) => this.actions.has(n));
+    return this.stateMachine(controllerStateMachine(valid(found) ? found! : guessController(this.clipNames)));
+  }
+
+  /** The controller setup this character would use (exported or guessed). */
+  get controllerSetup(): ControllerSetup {
+    let found: ControllerSetup | undefined;
+    this.object.traverse((o) => { found ??= (o.userData?.rigforge as { controller?: ControllerSetup } | undefined)?.controller; });
+    return found ?? guessController(this.clipNames);
   }
 
   get machineState(): AnimationStateMachine | null {
