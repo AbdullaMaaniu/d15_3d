@@ -187,7 +187,6 @@ describe('skin weights', async () => {
     const opts = { kernels: wasm, resolution: 128 };
     const plain = jump(computeSkinWeights(positions, index, defs, detected, { ...opts, splitShoulders: false }));
     const split = jump(computeSkinWeights(positions, index, defs, detected, opts));
-    console.log('gap', plain, split);
     expect(split).toBeLessThan(plain * 1.25);
   });
 });
