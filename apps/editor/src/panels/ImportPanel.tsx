@@ -29,6 +29,9 @@ export function DropZone() {
         <button className="btn" onClick={() => void loadSample('A')}>
           Try a sample
         </button>
+        <button className="btn ghost" onClick={() => void loadSample('quadruped')} title="A dog, to try animal rigging">
+          Sample animal
+        </button>
         <button className="btn ghost" onClick={() => void loadSample('prop')} title="A treasure chest, to try prop rigging">
           Sample prop
         </button>
@@ -61,14 +64,17 @@ export function ImportPanel() {
               value={rigType}
               onChange={setRigType}
               options={[
-                ['humanoid', 'Character (humanoid)'],
+                ['humanoid', 'Humanoid'],
+                ['quadruped', 'Animal (4 legs)'],
                 ['prop', 'Prop / object'],
               ]}
             />
             <p className="footer-note">
               {rigType === 'humanoid'
                 ? 'Auto-rigged with a full humanoid skeleton, including fingers.'
-                : 'Doors, chests, wheels, turrets… Each separate part gets a pivot you can spin, swing or slide.'}
+                : rigType === 'quadruped'
+                  ? 'Dogs, cats, horses… Legs, spine, neck, head and tail are found automatically, with walk, trot and gallop cycles.'
+                  : 'Doors, chests, wheels, turrets… Each separate part gets a pivot you can spin, swing or slide.'}
             </p>
           </Section>
           <Section title={file.name}>

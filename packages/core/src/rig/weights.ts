@@ -31,25 +31,15 @@ type V3 = [number, number, number];
 export function boneSegments(defs: readonly BoneDef[], map: JointMap): Float32Array {
   const segs: number[] = [];
   const index = new Map(defs.map((d, i) => [d.name, i]));
+  const children = new Map<string, string[]>();
+  for (const d of defs) if (d.parent) children.set(d.parent, [...(children.get(d.parent) ?? []), d.name]);
   defs.forEach((def, i) => {
     const a = map.joints[def.name];
     if (!a) return;
     const push = (b: V3 | undefined) => {
       if (b) segs.push(i, a[0], a[1], a[2], b[0], b[1], b[2]);
     };
-    if (def.name === 'hips') {
-      push(map.joints.spine);
-      push(map.joints.leftUpperLeg);
-      push(map.joints.rightUpperLeg);
-      return;
-    }
-    if (def.name === 'upperChest') {
-      push(map.joints.neck);
-      push(map.joints.leftShoulder);
-      push(map.joints.rightShoulder);
-      return;
-    }
-    if (def.name.endsWith('Hand')) {
+    if (def.name.endsWith('Hand') && def.side) {
       // Palm: from the wrist toward each finger's base so the palm isn't claimed by fingers.
       const side = def.name.startsWith('left') ? 'left' : 'right';
       const bases = ['IndexProximal', 'MiddleProximal', 'RingProximal', 'LittleProximal'].map((f) => map.joints[`${side}${f}`]).filter(Boolean);
@@ -57,6 +47,12 @@ export function boneSegments(defs: readonly BoneDef[], map: JointMap): Float32Ar
         for (const b of bases) push(b);
         return;
       }
+    }
+    // Branching bones (pelvis, chest, ...) own the volume toward each of their children.
+    const kids = children.get(def.name) ?? [];
+    if (kids.length > 1) {
+      for (const k of kids) push(map.joints[k]);
+      return;
     }
     const child = def.primaryChild ? map.joints[def.primaryChild] : undefined;
     const target = child && index.has(def.primaryChild!) ? child : map.tails[def.name] ?? child;

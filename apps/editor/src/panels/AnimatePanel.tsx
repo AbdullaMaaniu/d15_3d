@@ -1,10 +1,32 @@
 import { PRESETS, useStore } from '../store';
-import { humanoidDefs, keyCount, type PropMotion } from '@rigforge/core';
+import { humanoidDefs, keyCount, quadrupedGaits, type PropMotion } from '@rigforge/core';
 import { useMemo, useState } from 'react';
 import { Check, FilePicker, Section, Seg } from '../components/ui';
 
 const CATEGORY_ORDER = ['idle', 'locomotion', 'action', 'combat', 'emote'];
 const ESSENTIALS = ['idle', 'walk', 'run', 'jump'];
+
+function GaitSection() {
+  const joints = useStore((s) => s.joints);
+  const addGait = useStore((s) => s.addGait);
+  const gaits = useMemo(() => (joints ? quadrupedGaits(joints) : []), [joints]);
+  return (
+    <Section title="Gait library">
+      <div className="library">
+        {gaits.map((g) => (
+          <div key={g.id} className="lib-item">
+            <div>
+              <div className="name">{g.name} {g.loop && <span className="tag">loop</span>}</div>
+              <div className="sub">{g.description}{g.speed > 0 ? ` · ~${g.speed.toFixed(1)} m/s` : ''}</div>
+            </div>
+            <button className="btn small" onClick={() => addGait(g.id)}>+ Add</button>
+          </div>
+        ))}
+      </div>
+      <p className="footer-note">Gaits are generated from your animal's leg lengths. Use the speeds as blend thresholds in a state machine.</p>
+    </Section>
+  );
+}
 
 const AXES: Array<[string, [number, number, number]]> = [['X', [1, 0, 0]], ['Y', [0, 1, 0]], ['Z', [0, 0, 1]]];
 
@@ -144,6 +166,7 @@ export function AnimatePanel() {
   const startKeyEdit = useStore((s) => s.startKeyEdit);
   const stopKeyEdit = useStore((s) => s.stopKeyEdit);
   const newClip = useStore((s) => s.newClip);
+  const addGait = useStore((s) => s.addGait);
 
   const grouped = useMemo(() => {
     const g = new Map<string, typeof PRESETS>();
@@ -151,19 +174,33 @@ export function AnimatePanel() {
     return CATEGORY_ORDER.filter((c) => g.has(c)).map((c) => [c, g.get(c)!] as const);
   }, []);
   const added = new Set(clips.map((c) => c.source));
-  const isProp = useStore((s) => s.rigType === 'prop');
+  const rigType = useStore((s) => s.rigType);
+  const isProp = rigType === 'prop';
+  const isQuad = rigType === 'quadruped';
+  const direct = isProp || isQuad;
 
   return (
     <>
       <div>
         <h2>Animations</h2>
-        <p>{isProp ? 'Spin, swing, slide or bob any part, or keyframe your own motion.' : 'Add motion-captured presets or retarget your own Mixamo FBX, BVH or GLB clips.'}</p>
+        <p>
+          {isProp
+            ? 'Spin, swing, slide or bob any part, or keyframe your own motion.'
+            : isQuad
+              ? 'Add procedural gaits sized to your animal, or keyframe your own.'
+              : 'Add motion-captured presets or retarget your own Mixamo FBX, BVH or GLB clips.'}
+        </p>
       </div>
 
       {keyEdit.clipId && <KeyEditSection />}
       <Section title={`Your clips (${clips.length})`}>
         {clips.length === 0 && <p>{isProp ? 'No clips yet. Add a motion below or keyframe one.' : 'No clips yet. Start with the essentials:'}</p>}
-        {clips.length === 0 && !isProp && (
+        {clips.length === 0 && isQuad && (
+          <button className="btn" onClick={() => (['idle', 'walk', 'trot', 'gallop'] as const).forEach((id) => addGait(id))}>
+            + Idle, Walk, Trot, Gallop
+          </button>
+        )}
+        {clips.length === 0 && !direct && (
           <button className="btn" onClick={() => ESSENTIALS.forEach((id) => addPreset(id))}>
             + Idle, Walk, Run, Jump
           </button>
@@ -192,7 +229,7 @@ export function AnimatePanel() {
           </div>
         ))}
         <div className="grid2">
-          {isProp ? <span /> : (
+          {direct ? <span /> : (
           <FilePicker className="btn" accept=".fbx,.bvh,.glb,.gltf" multiple onFiles={(f) => void addImported(f)}>
             Import clip…
           </FilePicker>
@@ -201,11 +238,12 @@ export function AnimatePanel() {
             + Keyframe clip
           </button>
         </div>
-        {!isProp && <p className="footer-note">Import Mixamo FBX, BVH or GLB animations; they're retargeted automatically.</p>}
+        {!direct && <p className="footer-note">Import Mixamo FBX, BVH or GLB animations; they're retargeted automatically.</p>}
       </Section>
 
-      {isProp && <PropMotionSection />}
-      {!isProp && (
+      {isQuad && <GaitSection />}
+      {direct && <PropMotionSection />}
+      {!direct && (
       <Section title="Preset library">
         <div className="library">
           {grouped.map(([cat, items]) => (

@@ -39,3 +39,6 @@ export {
   splitParts, buildPropCharacter, propMotionKeys, bakePropClip, setPropKey, deletePropKeys, propKeyTimes,
   type MeshPart, type PartSplit, type PropBone, type PropRig, type PropKeys, type PropMotion,
 } from './rig/prop';
+export { QUADRUPED_DEFS, TAIL_BONES, legBone, detectQuadruped, guessQuadrupedOrientation, type QuadrupedDetectResult } from './rig/quadruped';
+export { createQuadrupedMannequin } from './mesh/mannequin';
+export { quadrupedGaits, type GaitClip, type GaitId } from './anim/gaits';

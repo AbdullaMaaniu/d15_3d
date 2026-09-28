@@ -8,13 +8,20 @@ export function OrientPanel() {
   const setHeight = useStore((s) => s.setHeight);
   const notes = useStore((s) => s.orientNotes);
   const confirm = useStore((s) => s.confirmOrientation);
-  const prop = useStore((s) => s.rigType === 'prop');
+  const rigType = useStore((s) => s.rigType);
+  const prop = rigType === 'prop';
 
   return (
     <>
       <div>
         <h2>Orient &amp; scale</h2>
-        <p>{prop ? 'Stand the object upright on the grid; its front should face the orange arrow (+Z).' : 'Stand the character upright on the grid, facing the orange arrow (+Z).'}</p>
+        <p>
+          {prop
+            ? 'Stand the object upright on the grid; its front should face the orange arrow (+Z).'
+            : rigType === 'quadruped'
+              ? 'Stand the animal on the grid with its head toward the orange arrow (+Z).'
+              : 'Stand the character upright on the grid, facing the orange arrow (+Z).'}
+        </p>
       </div>
       <Section title="Rotate" right={<button className="btn small" onClick={autoOrient}>Auto</button>}>
         <div className="grid3">
@@ -41,7 +48,10 @@ export function OrientPanel() {
           <input className="text" type="number" min={0.1} max={20} step={0.01} value={height} onChange={(e) => setHeight(parseFloat(e.target.value) || 1.8)} style={{ width: 80 }} />
           <span>m</span>
         </div>
-        <p className="footer-note">Real-world scale keeps physics and cameras sensible in three.js.{prop ? '' : ' An adult is about 1.7–1.8 m.'}</p>
+        <p className="footer-note">
+          Real-world scale keeps physics and cameras sensible in three.js.
+          {rigType === 'humanoid' ? ' An adult is about 1.7–1.8 m.' : rigType === 'quadruped' ? ' Height to the top of the head: a large dog is about 0.8 m.' : ''}
+        </p>
       </Section>
       <button className="btn primary block" onClick={confirm}>
         {prop ? 'Looks right: set up parts →' : 'Looks right: find the joints →'}

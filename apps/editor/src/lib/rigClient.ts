@@ -1,6 +1,7 @@
 import * as Comlink from 'comlink';
-import type { DetectResult, JointMap, SkinWeights } from '@rigforge/core';
-import type { RigWorkerApi } from '../workers/rig.worker';
+import type { DetectResult, JointMap, QuadrupedDetectResult, SkinWeights } from '@rigforge/core';
+import type { RigWorkerApi, SkeletonKind } from '../workers/rig.worker';
+export type { SkeletonKind } from '../workers/rig.worker';
 
 let worker: Comlink.Remote<RigWorkerApi> | null = null;
 
@@ -20,6 +21,10 @@ export async function detectJoints(positions: Float32Array, index: Uint32Array, 
   return api().detect(positions, index, fingers);
 }
 
+export async function detectQuadrupedJoints(positions: Float32Array, index: Uint32Array): Promise<QuadrupedDetectResult> {
+  return api().detectQuadruped(positions, index);
+}
+
 export interface WeightSettings {
   resolution: number;
   falloff: number;
@@ -30,9 +35,9 @@ export async function computeWeights(
   positions: Float32Array,
   index: Uint32Array,
   joints: JointMap,
-  fingers: boolean,
+  skeleton: SkeletonKind,
   settings: WeightSettings,
   onProgress: (stage: string, fraction: number) => void,
 ): Promise<SkinWeights> {
-  return api().weights(positions, index, joints, fingers, settings, Comlink.proxy(onProgress));
+  return api().weights(positions, index, joints, skeleton, settings, Comlink.proxy(onProgress));
 }

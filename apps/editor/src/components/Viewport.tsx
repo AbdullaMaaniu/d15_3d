@@ -99,7 +99,10 @@ function CameraTarget() {
     }
     const fit = Math.max(height, width / Math.min(aspect, 1.6), depth);
     controls.target.set(0, height * 0.5, 0);
-    camera.position.set(0, height * 0.5 + fit * 0.18, depth / 2 + fit * 2.1);
+    if (useStore.getState().rigType === 'quadruped') {
+      // Three-quarter side view: gaits read best from the side.
+      camera.position.set(fit * 1.45, height * 0.5 + fit * 0.35, fit * 0.95);
+    } else camera.position.set(0, height * 0.5 + fit * 0.18, depth / 2 + fit * 2.1);
     controls.update();
   }, [controls, camera, height, step, normalized, aspect]);
   return null;

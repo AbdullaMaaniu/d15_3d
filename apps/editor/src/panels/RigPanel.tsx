@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
-import { humanoidDefs } from '@rigforge/core';
-import { PRESETS, useStore } from '../store';
+import { quadrupedGaits } from '@rigforge/core';
+import { PRESETS, skeletonDefs, useStore } from '../store';
 import { Check, Notes, Section, Seg } from '../components/ui';
 import { PropRigPanel } from './PropRigPanel';
 
 export function RigPanel() {
   const isProp = useStore((s) => s.rigType === 'prop');
+  // Humanoids and quadrupeds share the joints → weights → pose-test flow.
   return isProp ? <PropRigPanel /> : <HumanoidRigPanel />;
 }
 
@@ -33,8 +34,12 @@ function HumanoidRigPanel() {
   const goto = useStore((s) => s.goto);
   const set = useStore((s) => s.set);
 
+  const quad = useStore((s) => s.rigType === 'quadruped');
+  const tests = quad
+    ? (joints ? quadrupedGaits(joints) : []).map((g) => ({ id: g.id as string, name: g.name }))
+    : PRESETS.map((p) => ({ id: p.id, name: p.name }));
   if (character) {
-    const testId = testClip ? PRESETS.find((p) => testClip.name === `test:${p.name}`)?.id ?? '' : '';
+    const testId = testClip ? tests.find((p) => testClip.name === `test:${p.name}`)?.id ?? '' : '';
     return (
       <>
         <div>
@@ -44,7 +49,7 @@ function HumanoidRigPanel() {
         <Section title="Pose test">
           <select className="text" value={testId} onChange={(e) => { useStore.getState().setPaint({ active: false }); setTestClip(e.target.value || null); }}>
             <option value="">Bind pose</option>
-            {PRESETS.map((p) => (
+            {tests.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
@@ -60,7 +65,7 @@ function HumanoidRigPanel() {
             }}
           >
             <option value="">All bones (colored regions)</option>
-            {humanoidDefs(fingers).map((d) => (
+            {skeletonDefs().map((d) => (
               <option key={d.name} value={d.name}>{d.name}</option>
             ))}
           </select>
@@ -82,10 +87,10 @@ function HumanoidRigPanel() {
     <>
       <div>
         <h2>Joints</h2>
-        <p>Drag the markers so each sits inside the body at the joint. Blue is the character's left, orange its right.</p>
+        <p>Drag the markers so each sits inside the body at the joint. Blue is the {quad ? "animal's" : "character's"} left, orange its right.</p>
       </div>
       {detection && !busy && (
-        <Section title={`Detected (${detection.pose}-pose)`} right={<span className="tag">{Math.round(detection.confidence * 100)}% confident</span>}>
+        <Section title={quad ? 'Detected (quadruped)' : `Detected (${detection.pose}-pose)`} right={<span className="tag">{Math.round(detection.confidence * 100)}% confident</span>}>
           <Notes items={detection.notes.length ? detection.notes : ['All joints found. Give them a quick check.']} ok={!detection.notes.length} />
           {detection.fingers && (
             <p className="footer-note">
@@ -96,8 +101,8 @@ function HumanoidRigPanel() {
       )}
       <Section title="Markers">
         <Check checked={symmetry} onChange={setSymmetry}>Mirror edits to the other side</Check>
-        <Check checked={fingers} onChange={setFingers}>Finger bones (15 per hand)</Check>
-        {fingers && (
+        {!quad && <Check checked={fingers} onChange={setFingers}>Finger bones (15 per hand)</Check>}
+        {fingers && !quad && (
           <Check checked={showFingerMarkers} onChange={(v) => set('showFingerMarkers', v)}>Show finger markers</Check>
         )}
         <div className="grid3">

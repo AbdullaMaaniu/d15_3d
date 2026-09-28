@@ -2,6 +2,11 @@ import { create } from 'zustand';
 import { AnimationClip, BufferGeometry, Quaternion, Vector3, type Object3D, type SkinnedMesh } from 'three';
 import {
   alignHeading,
+  guessQuadrupedOrientation,
+  quadrupedGaits,
+  QUADRUPED_DEFS,
+  type BoneDef,
+  type GaitId,
   bakePropClip,
   buildPropCharacter,
   deletePropKeys,
@@ -59,8 +64,8 @@ import {
   type EncodedClip,
 } from '@rigforge/core';
 import presetPack from '@rigforge/presets/clips.json';
-import { hasSkeleton, loadFiles, loadSample, loadSampleProp, type LoadedFile } from './lib/loaders';
-import { computeWeights, detectJoints, type WeightSettings } from './lib/rigClient';
+import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleProp, type LoadedFile } from './lib/loaders';
+import { computeWeights, detectJoints, detectQuadrupedJoints, type WeightSettings } from './lib/rigClient';
 import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
 
 export type Step = 'import' | 'orient' | 'rig' | 'animate' | 'export';
@@ -82,6 +87,14 @@ export interface ClipEntry {
   /** Prop clips: keys on the prop's own bones (no retargeting). */
   propKeys?: PropKeys;
   baked: AnimationClip;
+}
+
+export type RigType = 'humanoid' | 'quadruped' | 'prop';
+
+/** Bone definitions for the current skinned rig type. */
+export function skeletonDefs(): readonly BoneDef[] {
+  const s = useStore.getState();
+  return s.rigType === 'quadruped' ? QUADRUPED_DEFS : humanoidDefs(s.fingers);
 }
 
 export interface KeyEditState {
@@ -132,7 +145,7 @@ interface State {
   kernel: string | null;
   rigTimings: Record<string, number> | null;
 
-  rigType: 'humanoid' | 'prop';
+  rigType: RigType;
   propSplit: PartSplit | null;
   propRig: PropRig | null;
 
@@ -167,7 +180,7 @@ interface Actions {
   goto(step: Step): void;
   setError(e: string | null): void;
   loadFromFiles(files: File[]): Promise<void>;
-  loadSampleModel(pose: 'T' | 'A' | 'prop'): Promise<void>;
+  loadSampleModel(pose: 'T' | 'A' | 'prop' | 'quadruped'): Promise<void>;
   rotate(axis: 'x' | 'y' | 'z', degrees: number): void;
   autoOrient(): void;
   setHeight(h: number): void;
@@ -204,13 +217,14 @@ interface Actions {
   keyCurrentPose(bone?: string): void;
   deleteKeyAt(time: number, bone?: string): void;
   setClipKeys(id: string, keys: KeyLayer | undefined): void;
-  setRigType(t: 'humanoid' | 'prop'): void;
+  setRigType(t: RigType): void;
   addPropBone(): void;
   updatePropBone(name: string, patch: Partial<PropBone>): void;
   removePropBone(name: string): void;
   assignPart(part: number): void;
   buildPropRig(): void;
   addPropMotion(motion: PropMotion, name: string): void;
+  addGait(id: GaitId): void;
   openProject(blob: Blob): Promise<void>;
 }
 
@@ -319,6 +333,11 @@ export const useStore = create<State & Actions>()((set, get) => ({
   },
 
   async loadSampleModel(pose) {
+    if (pose === 'quadruped') {
+      set({ rigType: 'quadruped' });
+      ingest(loadSampleAnimal());
+      return;
+    }
     if (pose === 'prop') {
       set({ rigType: 'prop' });
       ingest(loadSampleProp());
@@ -339,7 +358,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   autoOrient() {
     const prepared = get().prepared;
     if (!prepared) return;
-    const g = guessOrientation(prepared.geometry);
+    const g = orientationFor(get().rigType, prepared.geometry);
     set({ rotation: g.rotation, orientNotes: g.notes.length ? g.notes : ['Model already looked upright and facing +Z.'] });
   },
 
@@ -389,7 +408,19 @@ export const useStore = create<State & Actions>()((set, get) => ({
     set({ busy: 'Detecting joints…', error: null, character: null, binding: null, clips: [], activeClip: null });
     try {
       const { positions, index } = arrays(normalized.geometry);
-      const detection = await detectJoints(positions, index, get().fingers);
+      let detection: DetectResult;
+      if (get().rigType === 'quadruped') {
+        const d = await detectQuadrupedJoints(positions, index);
+        detection = {
+          joints: d.joints,
+          tails: d.tails,
+          confidence: d.confidence,
+          notes: d.notes,
+          pose: 'unknown',
+          fingers: null,
+          measurements: { centerX: d.joints.hips[0], crotchY: d.measurements.bellyY, shoulderY: d.measurements.backY, neckY: 0, height: d.measurements.height },
+        };
+      } else detection = await detectJoints(positions, index, get().fingers);
       set({ detection, joints: { joints: detection.joints, tails: detection.tails } });
     } catch (e) {
       set({ error: `Joint detection failed: ${(e as Error).message}` });
@@ -429,12 +460,14 @@ export const useStore = create<State & Actions>()((set, get) => ({
     try {
       const { positions, index } = arrays(normalized.geometry);
       const t0 = performance.now();
-      const w = await computeWeights(positions, index, joints, fingers, weightSettings, (stage, fraction) => {
+      const quad = get().rigType === 'quadruped';
+      const w = await computeWeights(positions, index, joints, quad ? 'quadruped' : fingers ? 'humanoid' : 'humanoid-nofingers', weightSettings, (stage, fraction) => {
         // Progress messages cross the worker boundary asynchronously; drop any that arrive late.
         if (!finished && fraction < 1) set({ busy: `${stage}…`, progress: fraction });
       });
-      const built = buildSkinnedCharacter(normalized.geometry, normalized.materials, humanoidDefs(fingers), joints, w.skinIndex, w.skinWeight, 'Character');
-      const binding = bindSkeleton(built.root, autoMapBones(built.root).map);
+      const built = buildSkinnedCharacter(normalized.geometry, normalized.materials, skeletonDefs(), joints, w.skinIndex, w.skinWeight, quad ? 'Animal' : 'Character');
+      // Humanoids retarget through a canonical binding; quadrupeds use direct bone keys.
+      const binding = quad ? null : bindSkeleton(built.root, autoMapBones(built.root).map);
       const kernel = w.kernel;
       set({
         character: { root: built.root, built },
@@ -480,6 +513,12 @@ export const useStore = create<State & Actions>()((set, get) => ({
 
   setTestClip(presetId) {
     const binding = get().binding;
+    const built = get().character?.built;
+    if (get().rigType === 'quadruped' && built && presetId) {
+      const gait = quadrupedGaits(get().joints!).find((g) => g.id === presetId);
+      if (gait) set({ testClip: bakePropClip(built, gait.keys, `test:${gait.name}`), playing: true });
+      return;
+    }
     if (!binding || !presetId) {
       set({ testClip: null });
       return;
@@ -692,7 +731,8 @@ export const useStore = create<State & Actions>()((set, get) => ({
 
   setRigType(rigType) {
     const prepared = get().prepared;
-    set({ rigType, rotation: rigType === 'prop' ? new Quaternion() : prepared ? guessOrientation(prepared.geometry).rotation : new Quaternion(), orientNotes: [], height: rigType === 'prop' ? 1 : 1.8 });
+    const guess = prepared ? orientationFor(rigType, prepared.geometry) : { rotation: new Quaternion(), notes: [] };
+    set({ rigType, rotation: guess.rotation, orientNotes: guess.notes, height: defaultHeight(rigType) });
   },
 
   addPropBone() {
@@ -749,6 +789,18 @@ export const useStore = create<State & Actions>()((set, get) => ({
       ),
     });
     rebakeAll();
+  },
+
+  addGait(id) {
+    const built = get().character?.built;
+    const joints = get().joints;
+    const gait = joints ? quadrupedGaits(joints).find((g) => g.id === id) : undefined;
+    if (!built || !gait) return;
+    const names = new Set(get().clips.map((c) => c.name));
+    let n = gait.name;
+    for (let i = 2; names.has(n); i++) n = `${gait.name} ${i}`;
+    const entry = { id: `c${++clipCounter}`, name: n, source: `Gait · ${gait.description}`, normalized: propTimeline(gait.keys.duration, n), loop: gait.loop, inPlace: true, speed: 1, propKeys: gait.keys };
+    set({ clips: [...get().clips, { ...entry, baked: bakeProp(entry) }], activeClip: entry.id, playing: true, testClip: null });
   },
 
   addPropMotion(motion, name) {
@@ -833,20 +885,31 @@ function arrays(geometry: BufferGeometry) {
   return { positions, index };
 }
 
+function orientationFor(rigType: RigType, geometry: BufferGeometry): { rotation: Quaternion; notes: string[] } {
+  if (rigType === 'prop') return { rotation: new Quaternion(), notes: [] };
+  if (rigType === 'quadruped') return guessQuadrupedOrientation(geometry);
+  return guessOrientation(geometry);
+}
+
+function defaultHeight(rigType: RigType): number {
+  return rigType === 'humanoid' ? 1.8 : rigType === 'quadruped' ? 0.8 : 1;
+}
+
 function ingest(file: LoadedFile) {
   const prepared = mergeSceneMeshes(file.scene);
   removeDegenerateTriangles(prepared.geometry);
   const report = analyzeMesh(prepared.geometry, prepared.materials);
-  const guess = guessOrientation(prepared.geometry);
+  const rigType = useStore.getState().rigType;
+  const guess = orientationFor(rigType, prepared.geometry);
   const existingRig = hasSkeleton(file.scene);
   useStore.setState({
     file,
     prepared,
     report,
     existingRig,
-    rotation: useStore.getState().rigType === 'prop' ? new Quaternion() : guess.rotation,
-    orientNotes: useStore.getState().rigType === 'prop' ? [] : guess.notes,
-    height: useStore.getState().rigType === 'prop' ? 1 : 1.8,
+    rotation: guess.rotation,
+    orientNotes: guess.notes,
+    height: defaultHeight(rigType),
     normalized: null,
     detection: null,
     joints: null,

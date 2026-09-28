@@ -49,7 +49,7 @@ renderer.setAnimationLoop(() => {
     const has = (re: RegExp) => input.clipNames.find((n) => re.test(n));
     const idle = has(/idle/i) ?? initial;
     const walk = has(/^walk$/i) ?? has(/walk/i);
-    const run = has(/run/i);
+    const run = has(/run/i) ?? has(/gallop/i) ?? has(/trot/i);
     const jump = has(/jump/i);
     const blend = [[0, idle], ...(walk ? [[1.4, walk]] : []), ...(run ? [[4, run]] : [])]
       .map(([t, n]) => `[${t}, '${n}']`)

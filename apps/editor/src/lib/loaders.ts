@@ -5,7 +5,7 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
 import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
-import { createMannequin } from '@rigforge/core';
+import { createMannequin, createQuadrupedMannequin } from '@rigforge/core';
 
 export interface LoadedFile {
   name: string;
@@ -100,4 +100,15 @@ export function loadSampleProp(): LoadedFile {
   add(new CylinderGeometry(0.03, 0.03, 1.06, 12).rotateZ(Math.PI / 2).translate(0, 0.575, -0.31), metal, 'Hinge');
   add(new BoxGeometry(0.12, 0.14, 0.04).translate(0, 0.49, 0.32), metal, 'Lock');
   return { name: 'treasure-chest.glb', scene: root, animations: [] };
+}
+
+/** Sample animal: a procedural dog. */
+export function loadSampleAnimal(): LoadedFile {
+  const { geometry } = createQuadrupedMannequin({ detail: 14 });
+  geometry.computeVertexNormals();
+  const mesh = new Mesh(geometry, new MeshStandardMaterial({ color: 0xb08050, roughness: 0.75 }));
+  mesh.name = 'Dog';
+  const root = new Group();
+  root.add(mesh);
+  return { name: 'sample-dog.glb', scene: root, animations: [] };
 }

@@ -16,9 +16,10 @@ import {
   type PropKeys,
   type PropRig,
   buildPropCharacter,
+  QUADRUPED_DEFS,
   splitParts,
 } from '@rigforge/core';
-import type { ClipEntry, useStore } from '../store';
+import type { ClipEntry, RigType, useStore } from '../store';
 
 type StoreState = ReturnType<typeof useStore.getState>;
 
@@ -41,7 +42,7 @@ interface ProjectFile {
   exportName: string;
   exportPreset: StoreState['exportPreset'];
   step: StoreState['step'];
-  rigType?: 'humanoid' | 'prop';
+  rigType?: RigType;
   propRig?: PropRig | null;
   /** Whether the prop rig was built (props don't store weights: they're rigid). */
   propBuilt?: boolean;
@@ -99,7 +100,7 @@ export async function saveProject(s: StoreState): Promise<Blob> {
     rigType: s.rigType,
     propRig: s.propRig,
     propBuilt: s.rigType === 'prop' && !!built,
-    rig: built && s.rigType !== 'prop'
+    rig: built && s.rigType !== 'prop' && s.joints
       ? {
           skinIndex: b64.encode(new Uint8Array((built.mesh.geometry.attributes.skinIndex.array as Uint16Array).slice().buffer)),
           skinWeight: b64.encode(new Uint8Array((built.mesh.geometry.attributes.skinWeight.array as Float32Array).slice().buffer)),
@@ -176,13 +177,25 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     }
     return patch;
   }
-  Object.assign(patch, { rigType: 'humanoid' });
+  const quadruped = file.rigType === 'quadruped';
+  Object.assign(patch, { rigType: quadruped ? 'quadruped' : 'humanoid' });
 
   if (file.rig && file.joints) {
     const si = b64.decode(file.rig.skinIndex);
     const sw = b64.decode(file.rig.skinWeight);
     const skinIndex = new Uint16Array(si.buffer, si.byteOffset, si.byteLength / 2);
     const skinWeight = new Float32Array(sw.buffer, sw.byteOffset, sw.byteLength / 4);
+    if (quadruped) {
+      const built = buildSkinnedCharacter(normalizedGeometry, materials, QUADRUPED_DEFS, file.joints, skinIndex, skinWeight, 'Animal');
+      Object.assign(patch, {
+        character: { root: built.root, built },
+        binding: null,
+        unlocked: 4,
+        step: ['animate', 'export'].includes(file.step) ? file.step : 'rig',
+      });
+      (patch as any).pendingPropClips = file.clips;
+      return patch;
+    }
     const built = buildSkinnedCharacter(normalizedGeometry, materials, humanoidDefs(file.fingers), file.joints, skinIndex, skinWeight, 'Character');
     const binding = bindSkeleton(built.root, autoMapBones(built.root).map);
     const clips: ClipEntry[] = file.clips.map((c, i) => {
