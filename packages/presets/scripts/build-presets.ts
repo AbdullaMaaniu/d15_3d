@@ -10,6 +10,7 @@ import {
   findLoop,
   makeSeamlessLoop,
   sliceClip,
+  symmetrizeArms,
   type PresetPack,
 } from '@rigforge/core';
 import { CLIPS } from './clips.config';
@@ -36,6 +37,7 @@ for (const spec of CLIPS) {
     n = sliceClip(n, best.start, best.end + 1);
     n = alignHeading(n, spec.heading);
     n = makeSeamlessLoop(n);
+    if (spec.arms) n = symmetrizeArms(n, spec.arms);
     info = `loop ${((best.end - best.start) / FPS).toFixed(2)}s err ${best.error.toFixed(3)}`;
   } else {
     n = alignHeading(n, spec.heading);

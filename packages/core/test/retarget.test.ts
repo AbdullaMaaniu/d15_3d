@@ -11,6 +11,7 @@ import { autoMapBones } from '../src/anim/bonemap';
 import { bakeClip, bindSkeleton, extractNormalizedClip, setArmSpacing } from '../src/anim/retarget';
 import { armClearance } from '../src/anim/armClearance';
 import { decodeClip, type PresetPack } from '../src/anim/codec';
+import { symmetrizeArms } from '../src/anim/clipTools';
 import { createWasmKernels } from '../src/kernels';
 
 const pack = JSON.parse(readFileSync(fileURLToPath(new URL('../../presets/clips.json', import.meta.url)), 'utf8')) as PresetPack;
@@ -148,6 +149,47 @@ describe('retargeting', () => {
     setArmSpacing(binding, -10);
     binding.armClearance = { left: need, right: need };
     expect(minAngle(true)).toBeLessThan(need - 0.1);
+  });
+
+  it('rebuilds a lazy arm from the other, mirrored half a cycle later', () => {
+    const bones = ['hips', 'leftUpperArm', 'rightUpperArm'];
+    const frames = 8;
+    const rotations = new Float32Array(frames * 3 * 4);
+    for (let f = 0; f < frames; f++) {
+      const a = new Quaternion().setFromAxisAngle(new Vector3(1, 0.3, 0.2).normalize(), Math.sin((f / frames) * 2 * Math.PI));
+      a.toArray(rotations, (f * 3 + 1) * 4); // left arm swings
+      new Quaternion().toArray(rotations, (f * 3 + 2) * 4); // right arm doesn't
+      new Quaternion().toArray(rotations, f * 3 * 4);
+    }
+    const clip = { name: 'w', fps: 30, frames, bones, rotations, hips: new Float32Array(frames * 3), loop: true };
+    const out = symmetrizeArms(clip, 'left');
+    for (let f = 0; f < frames; f++) {
+      const src = ((f + 4) % frames) * 3 + 1;
+      const [x, y, z, w] = [0, 1, 2, 3].map((k) => rotations[src * 4 + k]);
+      const got = Array.from(out.rotations.slice((f * 3 + 2) * 4, (f * 3 + 2) * 4 + 4));
+      expect(got.map((v) => +v.toFixed(5))).toEqual([x, -y, -z, w].map((v) => +v.toFixed(5)));
+      // The good arm and the rest are untouched.
+      expect(Array.from(out.rotations.slice((f * 3 + 1) * 4, (f * 3 + 1) * 4 + 4))).toEqual(Array.from(rotations.slice((f * 3 + 1) * 4, (f * 3 + 1) * 4 + 4)));
+    }
+  });
+
+  it('swings both arms in the walk', async () => {
+    const c = await rig('A');
+    const binding = bindSkeleton(c.root, autoMapBones(c.root).map);
+    const clip = bakeClip(binding, decodeClip(pack.clips.find((p) => p.id === 'walk')!), { inPlace: true, clearBody: false });
+    const mixer = new AnimationMixer(c.root);
+    mixer.clipAction(clip).play();
+    const z: Record<string, number[]> = { left: [], right: [] };
+    for (let t = 0; t <= clip.duration; t += clip.duration / 24) {
+      mixer.setTime(t);
+      c.root.updateMatrixWorld(true);
+      for (const s of ['left', 'right']) z[s].push(c.bones[`${s}Hand`].getWorldPosition(new Vector3()).z);
+    }
+    mixer.stopAllAction();
+    const swing = (a: number[]) => Math.max(...a) - Math.min(...a);
+    const l = swing(z.left), r = swing(z.right);
+    expect(Math.min(l, r)).toBeGreaterThan(0.2);
+    expect(Math.min(l, r) / Math.max(l, r)).toBeGreaterThan(0.75);
   });
 
   it('animates the skinned character', async () => {
