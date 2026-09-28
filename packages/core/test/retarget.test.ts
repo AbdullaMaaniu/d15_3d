@@ -61,6 +61,37 @@ describe('retargeting', () => {
     expect(hipsErr).toBeLessThan(0.08);
   });
 
+  it('relaxes fingers the clip does not animate, curling toward the palm', async () => {
+    const c = await rig('T');
+    const binding = bindSkeleton(c.root, autoMapBones(c.root).map);
+    expect(binding.relaxedFingers.size).toBe(24);
+    // A one-frame T-pose clip without fingers, and the same with straight fingers.
+    const bones = ['hips'];
+    const tpose = { name: 'T', fps: 30, frames: 1, bones, rotations: new Float32Array([0, 0, 0, 1]), hips: new Float32Array([0, 1, 0]), loop: false };
+    const fingerBones = [...binding.relaxedFingers.keys()];
+    const straight = { ...tpose, bones: [...bones, ...fingerBones], rotations: new Float32Array((1 + fingerBones.length) * 4).map((_, i) => (i % 4 === 3 ? 1 : 0)) };
+    const tipAfter = (clip: typeof tpose) => {
+      const mixer = new AnimationMixer(c.root);
+      mixer.clipAction(bakeClip(binding, clip, { inPlace: true })).play();
+      mixer.update(0);
+      c.root.updateMatrixWorld(true);
+      const out: Record<string, Vector3> = {};
+      for (const side of ['left', 'right']) out[side] = c.bones[`${side}MiddleDistal`].getWorldPosition(new Vector3());
+      mixer.stopAllAction();
+      return out;
+    };
+    const relaxed = tipAfter(tpose);
+    const flat = tipAfter(straight);
+    for (const side of ['left', 'right']) {
+      // Palms face down in the mannequin's T-pose: curled tips drop and pull in toward the wrist.
+      expect(relaxed[side].y).toBeLessThan(flat[side].y - 0.005);
+      expect(Math.abs(relaxed[side].x)).toBeLessThan(Math.abs(flat[side].x));
+    }
+    // Mirror images of each other (within the detected joints' own asymmetry).
+    expect(Math.abs(relaxed.left.x + relaxed.right.x)).toBeLessThan(0.02);
+    expect(Math.abs(relaxed.left.y - relaxed.right.y)).toBeLessThan(0.02);
+  });
+
   it('animates the skinned character', async () => {
     const c = await rig('T');
     const binding = bindSkeleton(c.root, autoMapBones(c.root).map);

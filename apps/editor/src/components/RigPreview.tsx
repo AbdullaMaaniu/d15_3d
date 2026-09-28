@@ -65,16 +65,27 @@ export function RigPreview() {
     if (!clips.some(([id]) => id === clipId)) setClipId('walk');
   }, [clips, clipId]);
 
-  // Re-rig (at low voxel resolution) shortly after the joints stop moving.
-  useEffect(() => {
+  // Re-rig shortly after the joints stop moving, at the same resolution as "Build rig"
+  // (a coarser grid can't separate small fingers and makes hands look stretched).
+  // One build at a time: edits made meanwhile trigger a single follow-up build.
+  const busy = useRef(false);
+  const dirty = useRef(false);
+  const latest = useRef<() => void>(() => {});
+  latest.current = () => {
     if (!open || !joints || !normalized) return;
+    if (busy.current) {
+      dirty.current = true;
+      return;
+    }
+    busy.current = true;
+    dirty.current = false;
     const gen = ++generation.current;
     setStatus('working');
-    const timer = setTimeout(async () => {
+    void (async () => {
       try {
         const t0 = performance.now();
         const { positions, index, defs, rigJoints, kind, quad } = rigInputs();
-        const w = await computeWeights(positions, index, rigJoints, kind, { ...settings, resolution: Math.min(settings.resolution, 96) }, () => {});
+        const w = await computeWeights(positions, index, rigJoints, kind, settings, () => {});
         if (gen !== generation.current) return;
         const built = buildSkinnedCharacter(normalized.geometry, normalized.materials, defs, rigJoints, w.skinIndex, w.skinWeight, 'Preview');
         let clip: AnimationClip | null = null;
@@ -92,8 +103,16 @@ export function RigPreview() {
       } catch (e) {
         if (gen === generation.current) setStatus('error');
         console.warn('[rigforge] rig preview failed', e);
+      } finally {
+        busy.current = false;
+        if (dirty.current) latest.current();
       }
-    }, 350);
+    })();
+  };
+  useEffect(() => {
+    if (!open || !joints || !normalized) return;
+    setStatus('working');
+    const timer = setTimeout(() => latest.current(), 350);
     return () => clearTimeout(timer);
   }, [open, joints, normalized, fingers, extraBones, settings, clipId]);
 

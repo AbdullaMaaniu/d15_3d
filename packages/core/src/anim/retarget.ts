@@ -42,7 +42,20 @@ export interface SkeletonBinding {
   hipsHeight: number;
   /** Local transforms of every node at bind time; sampling always starts from these. */
   restPose: Array<[Object3D, Vector3, Quaternion, Vector3]>;
+  /**
+   * A relaxed, gently curled hand (normalized local rotations per finger bone), used
+   * for fingers a clip doesn't animate, so hands don't hang stiff and splayed.
+   */
+  relaxedFingers: Map<string, Quaternion>;
 }
+
+// Curl per segment (proximal, intermediate, distal), in degrees: more toward the little finger.
+const RELAXED_CURL: Record<string, [number, number, number]> = {
+  Index: [12, 18, 12],
+  Middle: [16, 22, 14],
+  Ring: [20, 26, 16],
+  Little: [24, 30, 18],
+};
 
 const ORDER = HUMANOID_WITH_FINGERS.map((d) => d.name);
 
@@ -83,6 +96,29 @@ export function bindSkeleton(root: Object3D, map: BoneMap): SkeletonBinding {
     tpose.set(canon, corr.clone().multiply(bind));
   }
 
+  // Relaxed fingers curl toward the palm. The palm side follows from the knuckle line
+  // (index -> little) and handedness, so it works whichever way the palms face.
+  const relaxedFingers = new Map<string, Quaternion>();
+  for (const side of ['left', 'right'] as const) {
+    const hand = node(`${side}Hand`), index = node(`${side}IndexProximal`), little = node(`${side}LittleProximal`);
+    const handCorr = correction.get(`${side}Hand`);
+    if (!hand || !index || !little || !handCorr) continue;
+    const a = new Vector3(side === 'left' ? 1 : -1, 0, 0);
+    const knuckles = wp(little).sub(wp(index)).applyQuaternion(handCorr);
+    knuckles.addScaledVector(a, -knuckles.dot(a));
+    if (knuckles.lengthSq() < 1e-12) continue;
+    knuckles.normalize();
+    // Left hand: palm = -(finger x knuckle line); right hand: +(finger x knuckle line).
+    const palm = new Vector3().crossVectors(a, knuckles).multiplyScalar(side === 'left' ? -1 : 1);
+    const axis = new Vector3().crossVectors(a, palm).normalize();
+    for (const [finger, angles] of Object.entries(RELAXED_CURL)) {
+      ['Proximal', 'Intermediate', 'Distal'].forEach((segment, k) => {
+        const canon = `${side}${finger}${segment}`;
+        if (node(canon)) relaxedFingers.set(canon, new Quaternion().setFromAxisAngle(axis, (angles[k] * Math.PI) / 180));
+      });
+    }
+  }
+
   const hipsNode = node('hips');
   if (!hipsNode) throw new Error('Skeleton has no hips bone mapped.');
   const restHipsWorld = wp(hipsNode);
@@ -93,7 +129,7 @@ export function bindSkeleton(root: Object3D, map: BoneMap): SkeletonBinding {
   }
   if (!Number.isFinite(ground)) ground = 0;
   const hipsHeight = Math.max(1e-6, restHipsWorld.y - ground);
-  return { root, map, tpose, restHipsWorld, hipsHeight, restPose };
+  return { root, map, tpose, restHipsWorld, hipsHeight, restPose, relaxedFingers };
 }
 
 /** Samples any three.js animation on a mapped skeleton into a NormalizedClip. */
@@ -229,7 +265,8 @@ export function bakeClip(binding: SkeletonBinding, clip: NormalizedClip, options
     worldN.clear();
     for (const canon of ORDER) {
       const i = index.get(canon);
-      const local = i !== undefined ? q.fromArray(clip.rotations, (f * clip.bones.length + i) * 4).clone() : new Quaternion();
+      // Fingers the clip doesn't animate take the relaxed hand pose.
+      const local = i !== undefined ? q.fromArray(clip.rotations, (f * clip.bones.length + i) * 4).clone() : binding.relaxedFingers.get(canon)?.clone() ?? new Quaternion();
       const parent = canonicalParent(canon);
       const pw = parent ? worldN.get(parent)! : new Quaternion();
       worldN.set(canon, pw.clone().multiply(local));
