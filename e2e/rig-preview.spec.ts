@@ -61,9 +61,15 @@ test('live rig preview follows the joints and can be closed', async ({ page }) =
   await expect(status).toContainText('Updating');
   await expect(status).toContainText('Rigged in', { timeout: 30_000 });
 
-  // Another clip.
+  // Another clip, and arm spacing: both only re-pose the preview, without re-rigging.
+  const rigged = await status.textContent();
   await page.getByLabel('Preview clip').selectOption('wave');
-  await expect(status).toContainText('Rigged in', { timeout: 30_000 });
+  await expect(status).toHaveText(rigged!);
+  await expect(page.locator('.rig-preview').getByText(/body needs \d+°/)).toBeVisible();
+  await page.locator('.rig-preview').getByRole('slider', { name: 'Arm spacing' }).fill('-8');
+  await expect(page.locator('.rig-preview').getByText('Arm spacing -8°')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).rigforge.getState().armSpacing)).toBe(-8);
+  await expect(status).toHaveText(rigged!);
   expect(first).toBeTruthy();
 
   await page.getByRole('button', { name: 'Close preview' }).click();

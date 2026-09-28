@@ -2,19 +2,29 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { AnimationMixer, Box3, Vector3, type AnimationClip, type Object3D } from 'three';
-import { autoMapBones, bakeClip, bakePropClip, bindSkeleton, buildSkinnedCharacter, decodeClip, quadrupedGaits, setArmSpacing } from '@rigforge/core';
+import { autoMapBones, bakeClip, bakePropClip, bindSkeleton, buildSkinnedCharacter, decodeClip, quadrupedGaits, setArmSpacing, type JointMap, type RiggedCharacter, type SkeletonBinding } from '@rigforge/core';
 import { PRESETS, rigInputs, useStore } from '../store';
 import { computeWeights } from '../lib/rigClient';
+import { ArmSpacing } from './ArmSpacing';
 
 const HUMAN_CLIPS: Array<[string, string]> = [['walk', 'Walk'], ['idle', 'Idle'], ['run', 'Run'], ['wave', 'Wave'], ['jump', 'Jump']];
 const ANIMAL_CLIPS: Array<[string, string]> = [['walk', 'Walk'], ['trot', 'Trot'], ['gallop', 'Gallop'], ['idle', 'Idle']];
+
+interface Rigged {
+  built: RiggedCharacter;
+  /** Humanoids only (other skeletons play gaits directly). */
+  binding: SkeletonBinding | null;
+  joints: JointMap;
+  size: Vector3;
+  center: Vector3;
+  ms: number;
+}
 
 interface Preview {
   root: Object3D;
   clip: AnimationClip | null;
   size: Vector3;
   center: Vector3;
-  ms: number;
 }
 
 function Stage({ preview }: { preview: Preview }) {
@@ -55,7 +65,8 @@ export function RigPreview() {
   const extraBones = useStore((s) => s.extraBones);
   const settings = useStore((s) => s.weightSettings);
   const [clipId, setClipId] = useState('walk');
-  const [preview, setPreview] = useState<Preview | null>(null);
+  const armSpacing = useStore((s) => s.armSpacing);
+  const [rigged, setRigged] = useState<Rigged | null>(null);
   const [status, setStatus] = useState<'idle' | 'working' | 'error'>('idle');
   const generation = useRef(0);
   const animal = rigType === 'quadruped';
@@ -88,21 +99,10 @@ export function RigPreview() {
         const w = await computeWeights(positions, index, rigJoints, kind, settings, () => {});
         if (gen !== generation.current) return;
         const built = buildSkinnedCharacter(normalized.geometry, normalized.materials, defs, rigJoints, w.skinIndex, w.skinWeight, 'Preview');
-        let clip: AnimationClip | null = null;
-        if (quad) {
-          const gait = quadrupedGaits(rigJoints).find((g) => g.id === clipId);
-          if (gait) clip = bakePropClip(built, gait.keys, gait.name);
-        } else {
-          const preset = PRESETS.find((p) => p.id === clipId);
-          if (preset) {
-            const binding = bindSkeleton(built.root, autoMapBones(built.root).map);
-            setArmSpacing(binding, useStore.getState().armSpacing);
-            clip = bakeClip(binding, decodeClip(preset), { inPlace: true, name: preset.name });
-          }
-        }
+        const binding = quad ? null : bindSkeleton(built.root, autoMapBones(built.root).map);
         built.root.traverse((o) => (o.frustumCulled = false));
         const box = new Box3().setFromBufferAttribute(normalized.geometry.attributes.position as never);
-        setPreview({ root: built.root, clip, size: box.getSize(new Vector3()), center: box.getCenter(new Vector3()), ms: performance.now() - t0 });
+        setRigged({ built, binding, joints: rigJoints, size: box.getSize(new Vector3()), center: box.getCenter(new Vector3()), ms: performance.now() - t0 });
         setStatus('idle');
       } catch (e) {
         if (gen === generation.current) setStatus('error');
@@ -118,7 +118,25 @@ export function RigPreview() {
     setStatus('working');
     const timer = setTimeout(() => latest.current(), 350);
     return () => clearTimeout(timer);
-  }, [open, joints, normalized, fingers, extraBones, settings, clipId]);
+  }, [open, joints, normalized, fingers, extraBones, settings]);
+
+  // Clip changes and arm spacing only re-pose the rig: no need to re-rig.
+  const preview = useMemo<Preview | null>(() => {
+    if (!rigged) return null;
+    const { built, binding, joints: rigJoints, size, center } = rigged;
+    let clip: AnimationClip | null = null;
+    if (!binding) {
+      const gait = quadrupedGaits(rigJoints).find((g) => g.id === clipId);
+      if (gait) clip = bakePropClip(built, gait.keys, gait.name);
+    } else {
+      const preset = PRESETS.find((p) => p.id === clipId);
+      if (preset) {
+        setArmSpacing(binding, armSpacing);
+        clip = bakeClip(binding, decodeClip(preset), { inPlace: true, name: preset.name });
+      }
+    }
+    return { root: built.root, clip, size, center };
+  }, [rigged, clipId, armSpacing]);
 
   if (!open) {
     return (
@@ -149,9 +167,14 @@ export function RigPreview() {
           </Canvas>
         )}
         <span className="rig-preview-status" data-testid="rig-preview-status">
-          {status === 'working' ? 'Updating…' : status === 'error' ? 'Preview failed' : preview ? `Rigged in ${Math.round(preview.ms)} ms · drag to orbit` : ''}
+          {status === 'working' ? 'Updating…' : status === 'error' ? 'Preview failed' : rigged ? `Rigged in ${Math.round(rigged.ms)} ms · drag to orbit` : ''}
         </span>
       </div>
+      {!animal && (
+        <footer>
+          <ArmSpacing measured={rigged?.binding?.autoArmClearance} compact />
+        </footer>
+      )}
     </aside>
   );
 }
