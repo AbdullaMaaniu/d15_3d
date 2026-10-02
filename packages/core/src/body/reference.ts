@@ -110,7 +110,7 @@ const smooth = (e0: number, e1: number, x: number) => {
 };
 
 /** Where a bone ends: its main child's joint, or its tail. */
-function boneEnd(map: JointMap, name: string): V3 | undefined {
+export function boneEnd(map: JointMap, name: string): V3 | undefined {
   const J = map.joints, T = map.tails;
   if (name.endsWith('Hand')) {
     const side = name.slice(0, -4);
@@ -213,8 +213,9 @@ function shapeReference(ref: ReferenceBody, shape: BodyShape, girth: Girth = {})
   const overall = shape.overall ?? 1;
   const active = (Object.keys(CONTROL_AREAS) as BodyControl[]).filter((k) => Math.abs((shape[k] ?? 1) - 1) > 1e-6);
   const head = shape.head ?? 1;
-  const thinned = ref.bones.map((b) => girth[b] ?? 1);
-  if (!active.length && Math.abs(overall - 1) < 1e-6 && Math.abs(head - 1) < 1e-6 && thinned.every((g) => g === 1)) return out;
+  // Weight doesn't change the skull, and changes hands and feet only a little.
+  const thinned = ref.bones.map((b) => (girth[b] ?? 1) * (b === 'head' ? 1 : /Hand|Foot|Toes|Thumb|Index|Middle|Ring|Little/.test(b) ? 1 + (overall - 1) * 0.3 : overall));
+  if (!active.length && Math.abs(head - 1) < 1e-6 && thinned.every((g) => g === 1)) return out;
   const frames = ref.bones.map((b) => {
     const a = ref.joints.joints[b] as V3 | undefined, e = boneEnd(ref.joints, b);
     return a && e ? { a, ...frame(a, e) } : null;
@@ -236,7 +237,7 @@ function shapeReference(ref: ReferenceBody, shape: BodyShape, girth: Girth = {})
       const r = len(radial) || 1;
       const t = along / (fr.l || 1);
       const cf = dot(radial, fr.f) / r, cs = dot(radial, fr.s) / r;
-      let m = overall * thinned[b];
+      let m = thinned[b];
       for (const { a, m: val } of perBone[b]) m *= 1 + (val - 1) * areaWeight(a, t, cf, cs);
       // The head grows as a whole, around its middle.
       if (b === headBone && Math.abs(head - 1) > 1e-6) {

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Uint32BufferAttribute, type Material, type SkinnedMesh } from 'three';
-import { coveredBodyTriangles, type GarmentSeparation } from '@rigforge/core';
+import { coveredBodyTriangles, type GarmentSeparation, type HeadCut, type RiggedCharacter } from '@rigforge/core';
 import { garmentRegions, useStore } from '../store';
-import { buildBodyMesh, loadReferenceBody, syncBodyPose, type BodyRig } from '../lib/body';
+import { buildBodyMesh, dressBody, dressMesh, loadReferenceBody, restOnBody, syncBodyPose, type BodyRig } from '../lib/body';
 import { buildGarmentMeshes, separateCharacter } from '../lib/garments';
 
 const DEFAULT_SKIN = '#d9a07a';
@@ -76,8 +76,11 @@ export function BodyView() {
       try {
         const t0 = performance.now();
         const next = buildBodyMesh(built, joints, shape, skin, ref);
-        next.mesh.userData.rfFullIndex = (next.mesh.geometry.index!.array as Uint32Array).slice();
-        useStore.setState({ bodyInfo: { triangles: next.mesh.geometry.index!.count / 3, ms: performance.now() - t0 } });
+        const g = next.mesh.geometry;
+        g.userData.rfFullIndex = (g.index!.array as Uint32Array).slice();
+        g.computeBoundingBox();
+        const height = g.boundingBox!.max.y - g.boundingBox!.min.y;
+        useStore.setState({ bodyInfo: { triangles: g.index!.count / 3, ms: performance.now() - t0, height, heightScale: shape.height ?? 1 } });
         syncBodyPose(next, built);
         setRig(next);
       } catch (e) {
@@ -92,18 +95,19 @@ export function BodyView() {
 
   useEffect(() => () => rig?.mesh.geometry.dispose(), [rig]);
 
-  // Leave out the body where the clothes cover it (both at rest, in rig space).
+  // Leave out the body where the clothes cover it (both at rest on the body's skeleton, in rig space).
   useEffect(() => {
     if (!rig) return;
     const g = rig.mesh.geometry;
-    const full = rig.mesh.userData.rfFullIndex as Uint32Array;
+    const full = g.userData.rfFullIndex as Uint32Array;
     let index = full;
     let hidden = 0;
     if (cut && garments.hideCovered) {
       const covered = coveredBodyTriangles(
         { positions: g.attributes.position.array as Float32Array, normals: g.attributes.normal.array as Float32Array, index: full },
-        cut.sep.pieces,
-        { headCut: cut.sep.headCut },
+        // The clothes as they sit on the body's skeleton at rest.
+        cut.sep.pieces.map((p) => ({ ...p, positions: restOnBody(rig.moves, p.positions, p.skinIndex, p.skinWeight) })),
+        { headCut: headCutOnBody(rig, character!.built!, cut.sep.headCut) },
       );
       const kept: number[] = [];
       for (let t = 0; t < covered.length; t++) {
@@ -115,7 +119,7 @@ export function BodyView() {
     g.setIndex(new Uint32BufferAttribute(index, 1));
     const info = useStore.getState().garmentInfo;
     if (info) useStore.setState({ garmentInfo: { ...info, hiddenBody: hidden } });
-  }, [rig, cut, garments.hideCovered]);
+  }, [rig, cut, garments.hideCovered, character]);
 
   // The cut clothes replace the character's mesh, beside it under the character's root; see-through like it in x-ray.
   useEffect(() => {
@@ -139,6 +143,14 @@ export function BodyView() {
       }
     }
   }, [cut, shading]);
+  // The character's clothes follow the body while it's shown: its own mesh and the cut garments.
+  useEffect(() => {
+    const built = character?.built;
+    if (!rig || !built) return;
+    syncBodyPose(rig, built);
+    const undo = [dressBody(rig, built), ...(cut?.meshes.map((m) => dressMesh(rig, m)) ?? [])];
+    return () => undo.forEach((u) => u());
+  }, [rig, character, cut]);
 
   // After the character's animation has posed its bones this frame.
   useFrame(() => {
@@ -150,4 +162,17 @@ export function BodyView() {
       {rig && <primitive object={rig.root} />}
     </>
   );
+}
+
+/** The kept head's cut moved onto the body's skeleton: its plane with the neck, its reach with the head. */
+function headCutOnBody(rig: BodyRig, built: RiggedCharacter, cut: HeadCut | null): HeadCut | null {
+  if (!cut) return null;
+  const names = built.skeleton.bones.map((b) => b.name);
+  const move = (bone: string, p: [number, number, number]): [number, number, number] => {
+    const i = names.indexOf(bone);
+    if (i < 0) return p;
+    const [x, y, z] = restOnBody(rig.moves, p, [i, 0, 0, 0], [1, 0, 0, 0]);
+    return [x, y, z];
+  };
+  return { ...cut, point: move('neck', cut.point), center: move('head', cut.center) };
 }
