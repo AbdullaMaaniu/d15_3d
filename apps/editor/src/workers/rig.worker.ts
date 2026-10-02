@@ -103,7 +103,7 @@ const api = {
     index: Uint32Array,
     joints: JointMap,
     skeleton: SkeletonKind,
-    options: { resolution: number; falloff: number; smoothIterations: number },
+    options: { resolution: number; falloff: number; smoothIterations: number; exclusive?: { vertices: Uint8Array; bones: number[]; shared: number[] } },
     onProgress: (stage: string, fraction: number) => void,
   ) {
     const k = await kernels();

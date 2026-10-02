@@ -796,3 +796,28 @@ export function readRegions(mesh: Mesh): Array<{ name: string; baseColor: string
   }
   return [...out].map(([name, baseColor]) => ({ name, baseColor }));
 }
+
+/**
+ * The hair triangles for hair physics: a region's triangles plus whatever
+ * continues them in the same colour (a ponytail lying on the back, which a
+ * clothing region may have claimed for being on the torso). 1 = hair.
+ */
+export function hairTriangles(set: RegionSet, ctx: RegionContext, region: number, tolerance = 14): Uint8Array {
+  const out = new Uint8Array(ctx.triCount);
+  const seeds: number[] = [];
+  for (let t = 0; t < ctx.triCount; t++) if (set.faces[t] === region) { out[t] = 1; seeds.push(t); }
+  const hair = dominantColor(ctx, seeds);
+  if (!hair) return out;
+  const { offsets, neighbors } = ctx.adjacency;
+  const stack = [...seeds];
+  while (stack.length) {
+    const t = stack.pop()!;
+    for (let k = offsets[t]; k < offsets[t + 1]; k++) {
+      const u = neighbors[k];
+      if (out[u] || dist(ctx.lab, u, hair) > tolerance) continue;
+      out[u] = 1;
+      stack.push(u);
+    }
+  }
+  return out;
+}

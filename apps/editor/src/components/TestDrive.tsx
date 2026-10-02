@@ -297,6 +297,7 @@ export function TestDrive() {
         });
         const size = new Box3().setFromObject(character.object).getSize(new Vector3());
         const s = Math.max(0.2, Math.max(size.y, 0.6 * Math.max(size.x, size.z))) / 1.8;
+        character.autoBlink();
         setLoaded({ character, machine: character.autoStateMachine(), s });
         setError(null);
       })

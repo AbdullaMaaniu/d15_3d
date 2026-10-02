@@ -5,6 +5,7 @@ import { Check, Notes, Section, Seg } from '../components/ui';
 import { PropRigPanel } from './PropRigPanel';
 import { AccessorySection, SpringSection } from './SpringPanels';
 import { CreatureRigPanel } from './CreatureRigPanel';
+import { FaceSection, HairSection } from './FacePanels';
 
 export function RigPanel() {
   const rigType = useStore((s) => s.rigType);
@@ -21,6 +22,7 @@ function HumanoidRigPanel() {
   const joints = useStore((s) => s.joints);
   const busy = useStore((s) => s.busy);
   const fingers = useStore((s) => s.fingers);
+  const faceRig = useStore((s) => s.faceRig);
   const setFingers = useStore((s) => s.setFingers);
   const symmetry = useStore((s) => s.symmetry);
   const setSymmetry = useStore((s) => s.setSymmetry);
@@ -63,6 +65,8 @@ function HumanoidRigPanel() {
             ))}
           </select>
         </Section>
+        <FaceSection />
+        <HairSection />
         <SpringSection />
         <PaintSection />
         <Section title="Inspect weights">
@@ -121,6 +125,7 @@ function HumanoidRigPanel() {
       <Section title="Markers">
         <Check checked={symmetry} onChange={setSymmetry}>Mirror edits to the other side</Check>
         {!quad && <Check checked={fingers} onChange={setFingers}>Finger bones (15 per hand)</Check>}
+        {!quad && <Check checked={faceRig} onChange={(v) => set('faceRig', v)}>Face rig (jaw, eyes, expressions)</Check>}
         {fingers && !quad && (
           <Check checked={showFingerMarkers} onChange={(v) => set('showFingerMarkers', v)}>Show finger markers</Check>
         )}

@@ -23,7 +23,7 @@ import {
   splitParts,
 } from '@rigforge/core';
 import { ALL_STEPS, DEFAULT_GARMENTS, accessoryDefs, type ClipEntry, type GarmentSettings, type RigType, type useStore } from '../store';
-import type { BodyShape, RegionDef } from '@rigforge/core';
+import { attachExpressions, faceDefs, faceJoints, type BodyShape, type FaceLandmarks, type RegionDef } from '@rigforge/core';
 import type { ControllerSetup, SpringConfig } from '@rigforge/three';
 import type { ClothFabrics } from './cloth';
 
@@ -67,6 +67,9 @@ interface ProjectFile {
   cloth?: { enabled: boolean; fabrics: ClothFabrics };
   /** Whether the prop rig was built (props don't store weights: they're rigid). */
   propBuilt?: boolean;
+  /** Face landmarks of the built rig (jaw, eyes, expressions); absent = no face bones. */
+  face?: FaceLandmarks | null;
+  faceRig?: boolean;
 }
 
 const b64 = {
@@ -130,6 +133,8 @@ export async function saveProject(s: StoreState): Promise<Blob> {
     cloth: s.cloth,
     armSpacing: s.armSpacing,
     propBuilt: s.rigType === 'prop' && !!built,
+    face: built ? s.face : null,
+    faceRig: s.faceRig,
     rig: built && s.rigType !== 'prop' && s.joints
       ? {
           skinIndex: b64.encode(new Uint8Array((built.mesh.geometry.attributes.skinIndex.array as Uint16Array).slice().buffer)),
@@ -224,6 +229,8 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     garments: { ...DEFAULT_GARMENTS, ...file.garments },
     cloth: file.cloth ?? { enabled: true, fabrics: {} },
     controller: file.controller ?? null,
+    faceRig: file.faceRig ?? true,
+    face: null,
   });
   const baseDefs = (defs: readonly import('@rigforge/core').BoneDef[]) => [...defs, ...accessoryDefs(file.extraBones ?? [])];
 
@@ -244,7 +251,13 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
       (patch as any).pendingPropClips = file.clips;
       return patch;
     }
-    const built = buildSkinnedCharacter(normalizedGeometry, materials, baseDefs(humanoidDefs(file.fingers)), file.joints, skinIndex, skinWeight, 'Character');
+    const face = file.face ?? null;
+    const defs = [...baseDefs(humanoidDefs(file.fingers)), ...(face ? faceDefs() : [])];
+    const fj = face ? faceJoints(face) : null;
+    const joints = fj ? { joints: { ...file.joints.joints, ...fj.joints }, tails: { ...file.joints.tails, ...fj.tails } } : file.joints;
+    const built = buildSkinnedCharacter(normalizedGeometry, materials, defs, joints, skinIndex, skinWeight, 'Character');
+    if (face) attachExpressions(built.mesh, face);
+    patch.face = face;
     const binding = bindSkeleton(built.root, autoMapBones(built.root).map);
     setArmSpacing(binding, file.armSpacing ?? 0);
     const clips: ClipEntry[] = file.clips.map((c, i) => {

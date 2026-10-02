@@ -48,6 +48,7 @@ export {
   regionBaseColors,
   applyRegions,
   readRegions,
+  hairTriangles,
   type RegionDef,
   type RegionSet,
   type RegionContext,
@@ -108,3 +109,8 @@ export {
   generateMotion, describeLibrary, planFromText, builtinMotionProvider, claudeMotionProvider, createMockMotionProvider, motionSystemPrompt,
   MotionProviderError, DEFAULT_CLAUDE_MODEL, type MotionProvider, type MotionRequest, type CatalogEntry, type GeneratedMotion, type ClaudeProviderOptions,
 } from './motion/providers';
+export {
+  FACE_BONES, EXPRESSIONS, faceDefs, faceJoints, detectFace, jawMask, applyFaceWeights, faceExpressions, attachExpressions,
+  type FaceLandmarks, type ExpressionName,
+} from './rig/face';
+export { hairChains, cleanHairWeights, type HairChains, type HairOptions } from './rig/hair';
