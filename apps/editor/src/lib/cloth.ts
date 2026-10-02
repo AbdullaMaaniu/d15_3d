@@ -1,0 +1,415 @@
+import { Matrix4, type Bone, type SkinnedMesh } from 'three';
+import {
+  clothMaterial,
+  createClothSim,
+  fitClothCapsules,
+  guessClothMaterial,
+  type ClothFrame,
+  type ClothMaterial,
+  type ClothMaterialId,
+  type ClothSim,
+  type BodyMesh,
+  type JointMap,
+  type RiggedCharacter,
+} from '@rigforge/core';
+import type { PartsState } from './parts';
+import { clothesOnBody, syncBodyPose, type BodyRig } from './body';
+
+type ClothCapsuleFit = ReturnType<typeof fitClothCapsules>[number];
+
+/** Fabric per part name; a missing name takes the guess from its name, null is not cloth. */
+export type ClothFabrics = Record<string, ClothMaterialId | null>;
+
+export function fabricOf(fabrics: ClothFabrics, partName: string): ClothMaterialId | null {
+  return partName in fabrics ? fabrics[partName] : guessClothMaterial(partName);
+}
+
+/**
+ * Runs the cloth simulation on a rigged character's garments during playback.
+ * The simulated positions are written back into the mesh in bind space (each
+ * vertex through the inverse of its own skinning matrix), so the GPU skinning
+ * puts them exactly where the simulation did and every material and shading
+ * mode keeps working. The bind positions are restored when it stops.
+ */
+export class ClothController {
+  readonly sim: ClothSim;
+  /** Milliseconds the last step took. */
+  ms = 0;
+  private mesh: SkinnedMesh;
+  private bindPositions: Float32Array;
+  /** Bind positions with the cloth lifted out of the body (what's shown while paused). */
+  private liftedPositions: Float32Array;
+  private bindNormals: Float32Array | null;
+  /** Render vertices that are cloth (not pinned), and their particle. */
+  private clothVerts: Uint32Array;
+  /** Inverse skinning matrix (3x4, row-major) per entry of clothVerts. */
+  private inverse: Float64Array;
+  private boneMats: Float64Array;
+  private bodyMats: Float64Array;
+  private built: RiggedCharacter;
+  private rig: BodyRig | null;
+  /** The character's mesh follows the body's skeleton (the body is shown; see dressBody). */
+  readonly dressed: boolean;
+  /** The skeleton the mesh was bound to when this was set up: a rebind means a new setup. */
+  readonly skeleton: SkinnedMesh['skeleton'];
+  private frame: ClothFrame;
+  private bodySkin: { index: Uint16Array; weight: Float32Array; normals: Float32Array; positions: Float32Array } | null;
+  private capsuleBones: Int32Array;
+  private capsuleBind: Float32Array;
+  private live = false;
+
+  /**
+   * Sets up the cloth for a character: its parts' fabrics, colliding with the
+   * body. While the body is shown the clothes are on its skeleton (dressBody),
+   * so the cloth rests where that puts it and collides with the body as shown.
+   * Otherwise the body is moved onto the character's own proportions to
+   * collide with.
+   */
+  static async create(built: RiggedCharacter, parts: PartsState, fabrics: ClothFabrics, rig: BodyRig | null, joints: JointMap): Promise<ClothController> {
+    const dressed = !!rig && built.mesh.skeleton !== built.skeleton;
+    const body = !rig ? null : dressed ? rig.body : undressBody(rig, built);
+    const g = built.mesh.geometry;
+    const orig = built.mesh.userData.rfOriginal as { index: Uint32Array } | undefined;
+    const index = orig?.index ?? (g.index!.array as Uint32Array);
+    const materials: ClothMaterial[] = [];
+    const perPart = parts.defs.map((d) => {
+      const m = clothMaterial(fabricOf(fabrics, d.name) ?? '');
+      if (!m) return -1;
+      materials.push(m);
+      return materials.length - 1;
+    });
+    const triangleMaterial = new Int16Array(index.length / 3);
+    for (let t = 0; t < triangleMaterial.length; t++) triangleMaterial[t] = perPart[parts.faces[t]] ?? -1;
+    const bindPositions = new Float32Array(g.attributes.position.array as Float32Array);
+    const restPositions = dressed ? clothesOnBody(built, rig!.moves) : bindPositions;
+    // The capsules hold the cloth off whatever skin shows: the body's, and the character's own where it isn't cloth.
+    const capsules = body ? fitClothCapsules(withSkin(body, built, restPositions, index, triangleMaterial), (dressed ? rig!.joints : joints).joints) : [];
+    const sim = await createClothSim({
+      positions: restPositions,
+      index,
+      triangleMaterial,
+      materials,
+      body: body ? { positions: body.positions, normals: body.normals } : undefined,
+      capsules,
+    });
+    return new ClothController(built, sim, rig, body, dressed, capsules, bindPositions);
+  }
+
+  private constructor(
+    built: RiggedCharacter,
+    sim: ClothSim,
+    rig: BodyRig | null,
+    body: BodyMesh | null,
+    dressed: boolean,
+    capsules: ClothCapsuleFit[],
+    bindPositions: Float32Array,
+  ) {
+    const mesh = built.mesh;
+    this.built = built;
+    this.rig = rig;
+    this.dressed = dressed;
+    this.skeleton = mesh.skeleton;
+    this.mesh = mesh;
+    this.sim = sim;
+    const g = mesh.geometry;
+    const names = built.skeleton.bones.map((b) => b.name);
+    let bodyIndex: Uint16Array | null = null;
+    if (body) {
+      const remap = body.bones.map((n) => Math.max(0, names.indexOf(n)));
+      bodyIndex = Uint16Array.from(body.skinIndex, (i) => remap[i]);
+    }
+    this.bindPositions = bindPositions;
+    this.liftedPositions = new Float32Array(bindPositions);
+    for (let v = 0; v < sim.particleOf.length; v++) {
+      const p = sim.particleOf[v];
+      if (p >= 0) for (let k = 0; k < 3; k++) this.liftedPositions[v * 3 + k] += sim.lift[p * 3 + k];
+    }
+    this.bindNormals = g.attributes.normal ? new Float32Array(g.attributes.normal.array as Float32Array) : null;
+    const verts: number[] = [];
+    for (let v = 0; v < sim.particleOf.length; v++) if (sim.particleOf[v] >= 0 && !sim.pinned[sim.particleOf[v]]) verts.push(v);
+    this.clothVerts = Uint32Array.from(verts);
+    this.inverse = new Float64Array(verts.length * 12);
+    this.boneMats = new Float64Array(names.length * 12);
+    this.bodyMats = new Float64Array((rig?.skeleton.bones.length ?? 0) * 12);
+    this.bodySkin =
+      body && bodyIndex
+        ? (() => {
+            const ids = sim.bodyVertices;
+            const pick = (src: ArrayLike<number>, k: number) => Float32Array.from({ length: ids.length * k }, (_, i) => src[ids[Math.floor(i / k)] * k + (i % k)]);
+            return { index: Uint16Array.from(pick(bodyIndex!, 4)), weight: pick(body.skinWeight, 4), normals: pick(body.normals, 3), positions: pick(body.positions, 3) };
+          })()
+        : null;
+    this.capsuleBones = Int32Array.from(capsules.map((c) => names.indexOf(c.from)));
+    this.capsuleBind = Float32Array.from(capsules.flatMap((c) => [...c.a, ...c.b, c.ra, c.rb]));
+    this.rest();
+    this.frame = {
+      targets: new Float32Array(sim.count * 3),
+      bodyNormals: this.bodySkin ? new Float32Array(sim.bodyVertices.length * 3) : undefined,
+      bodyPositions: this.bodySkin ? new Float32Array(sim.bodyVertices.length * 3) : undefined,
+      capsules: capsules.length ? new Float32Array(capsules.length * 8) : undefined,
+    };
+  }
+
+  /** Particles that move (not sewn to skin). */
+  get moving(): number {
+    return this.clothVerts.length;
+  }
+
+  /** Advances the cloth by dt (playing) or keeps it in step with a paused pose. */
+  update(dt: number, playing: boolean): void {
+    if (!this.sim.count) return;
+    const t0 = performance.now();
+    const changed = this.capture();
+    if (playing && dt > 0) {
+      this.sim.step(dt, this.frame);
+      this.write();
+    } else if (changed) {
+      // Scrubbing or a new pose while paused: the rest shape, skinned, until it plays again.
+      this.rest();
+      this.sim.restart();
+    }
+    this.ms = performance.now() - t0;
+  }
+
+  /** Shows the cloth at rest: the bind shape, lifted out of the body where it started inside it. */
+  private rest(): void {
+    const g = this.mesh.geometry;
+    (g.attributes.position.array as Float32Array).set(this.liftedPositions);
+    g.attributes.position.needsUpdate = true;
+    if (this.bindNormals && g.attributes.normal) {
+      (g.attributes.normal.array as Float32Array).set(this.bindNormals);
+      g.attributes.normal.needsUpdate = true;
+    }
+    this.live = true;
+  }
+
+  /** Puts the mesh back to its bind shape. */
+  restore(): void {
+    if (!this.live) return;
+    const g = this.mesh.geometry;
+    (g.attributes.position.array as Float32Array).set(this.bindPositions);
+    g.attributes.position.needsUpdate = true;
+    if (this.bindNormals && g.attributes.normal) {
+      (g.attributes.normal.array as Float32Array).set(this.bindNormals);
+      g.attributes.normal.needsUpdate = true;
+    }
+    this.live = false;
+  }
+
+  dispose(): void {
+    this.restore();
+  }
+
+  private lastPose = new Float64Array(0);
+
+  /** Skins the particle targets, body backstops and capsules for the current pose. Returns whether the pose moved. */
+  private capture(): boolean {
+    const mesh = this.mesh;
+    mesh.parent?.updateMatrixWorld(true);
+    const B = this.boneMats;
+    // Dressed, the mesh follows the body's bones: posed here from the character's, not left to the body view's frame.
+    if (this.dressed) syncBodyPose(this.rig!, this.built);
+    worldBones(mesh, B, this.dressed ? this.rig!.skeleton.bones : undefined);
+    let changed = this.lastPose.length !== B.length;
+    if (changed) this.lastPose = new Float64Array(B.length);
+    for (let k = 0; k < B.length; k++) {
+      if (Math.abs(this.lastPose[k] - B[k]) > 1e-6) changed = true;
+      this.lastPose[k] = B[k];
+    }
+    // Shown, the body moves on its own skeleton; otherwise it was fitted to the character's.
+    let BB = B;
+    if (this.dressed) {
+      worldBones(this.rig!.mesh, this.bodyMats);
+      BB = this.bodyMats;
+    }
+    const g = mesh.geometry;
+    const si = g.attributes.skinIndex.array as ArrayLike<number>;
+    const sw = g.attributes.skinWeight.array as ArrayLike<number>;
+    const P = this.bindPositions;
+    const M = new Float64Array(12);
+    const blend = (index: ArrayLike<number>, weight: ArrayLike<number>, v: number, mats = B) => {
+      M.fill(0);
+      for (let k = 0; k < 4; k++) {
+        const w = weight[v * 4 + k];
+        if (!w) continue;
+        const o = index[v * 4 + k] * 12;
+        for (let j = 0; j < 12; j++) M[j] += mats[o + j] * w;
+      }
+    };
+    const T = this.frame.targets;
+    const sim = this.sim;
+    const L = sim.lift;
+    for (let p = 0; p < sim.count; p++) {
+      const v = sim.vertexOf[p];
+      blend(si, sw, v);
+      const x = P[v * 3] + L[p * 3], y = P[v * 3 + 1] + L[p * 3 + 1], z = P[v * 3 + 2] + L[p * 3 + 2];
+      T[p * 3] = M[0] * x + M[1] * y + M[2] * z + M[3];
+      T[p * 3 + 1] = M[4] * x + M[5] * y + M[6] * z + M[7];
+      T[p * 3 + 2] = M[8] * x + M[9] * y + M[10] * z + M[11];
+    }
+    // Inverse skinning per moving render vertex, for writing back.
+    const inv = this.inverse;
+    for (let i = 0; i < this.clothVerts.length; i++) {
+      blend(si, sw, this.clothVerts[i]);
+      invert3x4(M, inv, i * 12);
+    }
+    const bs = this.bodySkin;
+    if (bs && this.frame.bodyNormals) {
+      for (let i = 0; i < bs.normals.length / 3; i++) {
+        blend(bs.index, bs.weight, i, BB);
+        const nx = bs.normals[i * 3], ny = bs.normals[i * 3 + 1], nz = bs.normals[i * 3 + 2];
+        const ax = M[0] * nx + M[1] * ny + M[2] * nz, ay = M[4] * nx + M[5] * ny + M[6] * nz, az = M[8] * nx + M[9] * ny + M[10] * nz;
+        const l = Math.hypot(ax, ay, az) || 1;
+        this.frame.bodyNormals[i * 3] = ax / l;
+        this.frame.bodyNormals[i * 3 + 1] = ay / l;
+        this.frame.bodyNormals[i * 3 + 2] = az / l;
+        const px = bs.positions[i * 3], py = bs.positions[i * 3 + 1], pz = bs.positions[i * 3 + 2];
+        const out = this.frame.bodyPositions!;
+        out[i * 3] = M[0] * px + M[1] * py + M[2] * pz + M[3];
+        out[i * 3 + 1] = M[4] * px + M[5] * py + M[6] * pz + M[7];
+        out[i * 3 + 2] = M[8] * px + M[9] * py + M[10] * pz + M[11];
+      }
+    }
+    const caps = this.frame.capsules;
+    if (caps) {
+      const C = this.capsuleBind;
+      for (let c = 0; c < this.capsuleBones.length; c++) {
+        const o = Math.max(0, this.capsuleBones[c]) * 12;
+        for (let e = 0; e < 2; e++) {
+          const x = C[c * 8 + e * 3], y = C[c * 8 + e * 3 + 1], z = C[c * 8 + e * 3 + 2];
+          caps[c * 8 + e * 3] = BB[o] * x + BB[o + 1] * y + BB[o + 2] * z + BB[o + 3];
+          caps[c * 8 + e * 3 + 1] = BB[o + 4] * x + BB[o + 5] * y + BB[o + 6] * z + BB[o + 7];
+          caps[c * 8 + e * 3 + 2] = BB[o + 8] * x + BB[o + 9] * y + BB[o + 10] * z + BB[o + 11];
+        }
+        caps[c * 8 + 6] = C[c * 8 + 6];
+        caps[c * 8 + 7] = C[c * 8 + 7];
+      }
+    }
+    return changed;
+  }
+
+  /** Writes the simulated cloth into the mesh, in bind space. */
+  private write(): void {
+    const g = this.mesh.geometry;
+    const pos = g.attributes.position.array as Float32Array;
+    const nor = g.attributes.normal ? (g.attributes.normal.array as Float32Array) : null;
+    const X = this.sim.positions, Nn = this.sim.normals;
+    const inv = this.inverse;
+    for (let i = 0; i < this.clothVerts.length; i++) {
+      const v = this.clothVerts[i];
+      const p = this.sim.particleOf[v] * 3;
+      const o = i * 12;
+      const x = X[p], y = X[p + 1], z = X[p + 2];
+      pos[v * 3] = inv[o] * x + inv[o + 1] * y + inv[o + 2] * z + inv[o + 3];
+      pos[v * 3 + 1] = inv[o + 4] * x + inv[o + 5] * y + inv[o + 6] * z + inv[o + 7];
+      pos[v * 3 + 2] = inv[o + 8] * x + inv[o + 9] * y + inv[o + 10] * z + inv[o + 11];
+      if (nor) {
+        // Keep the side the mesh's own normal faces (the sheet may be wound either way).
+        const bx = this.bindNormals![v * 3], by = this.bindNormals![v * 3 + 1], bz = this.bindNormals![v * 3 + 2];
+        let nx = inv[o] * Nn[p] + inv[o + 1] * Nn[p + 1] + inv[o + 2] * Nn[p + 2];
+        let ny = inv[o + 4] * Nn[p] + inv[o + 5] * Nn[p + 1] + inv[o + 6] * Nn[p + 2];
+        let nz = inv[o + 8] * Nn[p] + inv[o + 9] * Nn[p + 1] + inv[o + 10] * Nn[p + 2];
+        const l = Math.hypot(nx, ny, nz) || 1;
+        const s = nx * bx + ny * by + nz * bz < 0 ? -1 / l : 1 / l;
+        nx *= s;
+        ny *= s;
+        nz *= s;
+        nor[v * 3] = nx;
+        nor[v * 3 + 1] = ny;
+        nor[v * 3 + 2] = nz;
+      }
+    }
+    g.attributes.position.needsUpdate = true;
+    if (nor) g.attributes.normal.needsUpdate = true;
+    this.live = true;
+  }
+}
+
+/**
+ * A skinned mesh's bone matrices in world space (3x4, row-major), as the GPU
+ * skins it: meshWorld * bindMatrixInverse * boneWorld * boneInverse * bindMatrix.
+ */
+function worldBones(mesh: SkinnedMesh, out: Float64Array, bones: readonly Bone[] = mesh.skeleton.bones): void {
+  const skel = mesh.skeleton;
+  const pre = new Matrix4().multiplyMatrices(mesh.matrixWorld, mesh.bindMatrixInverse);
+  const tmp = new Matrix4();
+  for (let b = 0; b < bones.length; b++) {
+    tmp.multiplyMatrices(bones[b].matrixWorld, skel.boneInverses[b]).premultiply(pre).multiply(mesh.bindMatrix);
+    const e = tmp.elements;
+    const o = b * 12;
+    out[o] = e[0]; out[o + 1] = e[4]; out[o + 2] = e[8]; out[o + 3] = e[12];
+    out[o + 4] = e[1]; out[o + 5] = e[5]; out[o + 6] = e[9]; out[o + 7] = e[13];
+    out[o + 8] = e[2]; out[o + 9] = e[6]; out[o + 10] = e[10]; out[o + 11] = e[14];
+  }
+}
+
+/** The body plus the character's vertices that aren't cloth (rest positions given), to fit capsules to both. */
+function withSkin(body: BodyMesh, built: RiggedCharacter, rest: Float32Array, index: ArrayLike<number>, triangleMaterial: Int16Array): Pick<BodyMesh, 'positions' | 'skinIndex' | 'skinWeight' | 'bones'> {
+  const g = built.mesh.geometry;
+  const si = g.attributes.skinIndex.array as ArrayLike<number>, sw = g.attributes.skinWeight.array as ArrayLike<number>;
+  const names = built.skeleton.bones.map((b) => b.name);
+  const skin = new Set<number>();
+  for (let t = 0; t < triangleMaterial.length; t++) if (triangleMaterial[t] < 0) for (let k = 0; k < 3; k++) skin.add(index[t * 3 + k]);
+  const bones = [...body.bones];
+  const boneOf = names.map((n) => {
+    const i = bones.indexOf(n);
+    return i >= 0 ? i : bones.push(n) - 1;
+  });
+  const B = body.positions.length / 3, V = B + skin.size;
+  const positions = new Float32Array(V * 3), skinIndex = new Uint16Array(V * 4), skinWeight = new Float32Array(V * 4);
+  positions.set(body.positions);
+  skinIndex.set(body.skinIndex);
+  skinWeight.set(body.skinWeight);
+  let o = B;
+  for (const v of skin) {
+    for (let k = 0; k < 3; k++) positions[o * 3 + k] = rest[v * 3 + k];
+    for (let k = 0; k < 4; k++) {
+      skinIndex[o * 4 + k] = boneOf[si[v * 4 + k]];
+      skinWeight[o * 4 + k] = sw[v * 4 + k];
+    }
+    o++;
+  }
+  return { positions, skinIndex, skinWeight, bones };
+}
+
+/**
+ * The body moved from its own proportions onto the character's, bone by bone
+ * (the inverse of dressBody's move), to collide with the clothes where the
+ * character's own skeleton puts them.
+ */
+function undressBody(rig: BodyRig, built: RiggedCharacter): BodyMesh {
+  const body = rig.body;
+  const names = built.skeleton.bones.map((b) => b.name);
+  const moves = body.bones.map((n) => rig.moves[names.indexOf(n)]);
+  const P = body.positions;
+  const out = new Float32Array(P.length);
+  for (let v = 0; v < P.length / 3; v++) {
+    for (let k = 0; k < 4; k++) {
+      const w = body.skinWeight[v * 4 + k];
+      const m = moves[body.skinIndex[v * 4 + k]];
+      if (!(w > 0) || !m) continue;
+      const dx = P[v * 3] - m.to.x, dy = P[v * 3 + 1] - m.to.y, dz = P[v * 3 + 2] - m.to.z;
+      const along = (dx * m.dir.x + dy * m.dir.y + dz * m.dir.z) * (1 / m.stretch - 1);
+      out[v * 3] += (m.from.x + dx + m.dir.x * along) * w;
+      out[v * 3 + 1] += (m.from.y + dy + m.dir.y * along) * w;
+      out[v * 3 + 2] += (m.from.z + dz + m.dir.z * along) * w;
+    }
+  }
+  return { ...body, positions: out };
+}
+
+/** Inverts an affine 3x4 matrix (row-major) into out[o..o+12]. */
+function invert3x4(m: Float64Array, out: Float64Array, o: number): void {
+  const a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
+  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+  let det = a * A + b * B + c * C;
+  if (Math.abs(det) < 1e-12) det = det < 0 ? -1e-12 : 1e-12;
+  const r = 1 / det;
+  const i00 = A * r, i01 = -(b * i - c * h) * r, i02 = (b * f - c * e) * r;
+  const i10 = B * r, i11 = (a * i - c * g) * r, i12 = -(a * f - c * d) * r;
+  const i20 = C * r, i21 = -(a * h - b * g) * r, i22 = (a * e - b * d) * r;
+  const tx = m[3], ty = m[7], tz = m[11];
+  out[o] = i00; out[o + 1] = i01; out[o + 2] = i02; out[o + 3] = -(i00 * tx + i01 * ty + i02 * tz);
+  out[o + 4] = i10; out[o + 5] = i11; out[o + 6] = i12; out[o + 7] = -(i10 * tx + i11 * ty + i12 * tz);
+  out[o + 8] = i20; out[o + 9] = i21; out[o + 10] = i22; out[o + 11] = -(i20 * tx + i21 * ty + i22 * tz);
+}

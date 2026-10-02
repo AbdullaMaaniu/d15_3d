@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { BODY_CONTROLS, type BodyControl, type BodyControlDef } from '@rigforge/core';
+import { BODY_CONTROLS, CLOTH_MATERIALS, type BodyControl, type BodyControlDef, type ClothMaterialId } from '@rigforge/core';
 import { useStore } from '../store';
 import { Check, Notes, Section } from '../components/ui';
+import { fabricOf } from '../lib/cloth';
 
 const GROUPS = [...new Set(BODY_CONTROLS.map((c) => c.group))];
 
@@ -87,6 +88,7 @@ export function BodyPanel() {
       {GROUPS.map((g, i) => (
         <ShapeGroup key={g} group={g} open={i === 0} />
       ))}
+      <ClothSection />
       <Section title="Preview">
         <div className="row between">
           <button className="btn small" onClick={() => s().set('shading', shading === 'xray' ? 'textured' : 'xray')} aria-pressed={shading === 'xray'}>
@@ -163,5 +165,62 @@ function ShapeSlider({ def }: { def: BodyControlDef }) {
       </span>
       <input type="range" min={range[0]} max={range[1]} step={0.01} value={v} aria-label={label} onChange={(e) => setV(+e.target.value)} />
     </div>
+  );
+}
+
+/** Fabric per part: the cloth simulation runs on these parts while a clip plays (here and in Animate). */
+function ClothSection() {
+  const parts = useStore((s) => s.parts);
+  const cloth = useStore((s) => s.cloth);
+  const info = useStore((s) => s.clothInfo);
+  const setCloth = useStore((s) => s.setCloth);
+  const goto = useStore((s) => s.goto);
+  return (
+    <Section title="Cloth">
+      {!parts ? (
+        <>
+          <p className="footer-note">Split the character into parts first, so the clothes can move on their own.</p>
+          <button className="btn small" onClick={() => goto('parts')}>Go to Parts</button>
+        </>
+      ) : (
+        <>
+          <label className="row between">
+            <span>Simulate cloth during playback</span>
+            <input type="checkbox" checked={cloth.enabled} aria-label="Simulate cloth" onChange={(e) => setCloth({ enabled: e.target.checked })} />
+          </label>
+          {parts.defs.map((d) => {
+            const fabric = fabricOf(cloth.fabrics, d.name);
+            const m = CLOTH_MATERIALS.find((x) => x.id === fabric);
+            return (
+              <div className="field" key={d.name} title={m ? `${m.hint}. ${Math.round(m.density * 1000)} g/m².` : 'Moves with the skin'}>
+                <span className="row between">
+                  <span className="row" style={{ gap: 6 }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 3, background: d.color, display: 'inline-block' }} />
+                    {d.name}
+                  </span>
+                  <select
+                    aria-label={`${d.name} fabric`}
+                    value={fabric ?? 'none'}
+                    disabled={!cloth.enabled}
+                    onChange={(e) => setCloth({ fabrics: { [d.name]: e.target.value === 'none' ? null : (e.target.value as ClothMaterialId) } })}
+                  >
+                    <option value="none">Not cloth</option>
+                    {CLOTH_MATERIALS.map((x) => (
+                      <option key={x.id} value={x.id}>
+                        {x.label} · {Math.round(x.density * 1000)} g/m²
+                      </option>
+                    ))}
+                  </select>
+                </span>
+              </div>
+            );
+          })}
+          <p className="footer-note">
+            Heavier fabric hangs and swings more, stiffer fabric holds its shape, light fabric floats.
+            {info && ` ${info.particles.toLocaleString()} cloth points${info.ms ? `, ${info.ms.toFixed(1)} ms a frame` : ''}.`} Not exported yet.
+          </p>
+        </>
+      )}
+    </Section>
   );
 }

@@ -1,5 +1,5 @@
 import { Bone, BufferGeometry, Float32BufferAttribute, Group, Matrix4, Vector3, MeshStandardMaterial, Skeleton, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute } from 'three';
-import { boneEnd, clothesGirth, decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, tsKernels, PROPORTION_CONTROLS, type BodyShape, type Girth, type JointMap, type ReferenceBody } from '@rigforge/core';
+import { boneEnd, clothesGirth, decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, tsKernels, PROPORTION_CONTROLS, type BodyMesh, type BodyShape, type Girth, type JointMap, type ReferenceBody } from '@rigforge/core';
 import type { RiggedCharacter } from '@rigforge/core';
 import referenceUrl from '@rigforge/core/assets/reference-body.bin?url';
 import { garmentRegions, useStore } from '../store';
@@ -99,7 +99,7 @@ function restMap(built: RiggedCharacter, joints: JointMap, prop: JointMap, bodyR
 }
 
 /** The character's rest surface moved onto the body's skeleton (rig space), as the body's skinning will place it. */
-function clothesOnBody(built: RiggedCharacter, moves: BoneMove[]): Float32Array {
+export function clothesOnBody(built: RiggedCharacter, moves: BoneMove[]): Float32Array {
   const g = built.mesh.geometry;
   return restOnBody(moves, g.getAttribute('position').array, g.getAttribute('skinIndex').array, g.getAttribute('skinWeight').array);
 }
@@ -169,6 +169,9 @@ export interface BodyRig {
   links: Array<{ bone: Bone; source: Bone; restPosition: Bone['position']; sourceRest: Bone['position'] }>;
   /** Body hips height over character hips height: scales root motion so the feet keep pace. */
   stride: number;
+  /** The fitted body (rig space, rest pose) and its joints, which the cloth collides with. */
+  body: BodyMesh;
+  joints: JointMap;
   /** How the character's bones map onto the body's, to dress the body in the character's clothes. */
   moves: BoneMove[];
 }
@@ -232,7 +235,7 @@ export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: B
   const ground = Math.min(...Object.values(joints.tails).map((t) => t[1]), ...Object.values(joints.joints).map((t) => t[1]));
   const groundBody = Math.min(...Object.values(prop.tails).map((t) => t[1]), ...Object.values(prop.joints).map((t) => t[1]));
   const stride = joints.joints.hips && prop.joints.hips ? (prop.joints.hips[1] - groundBody) / (joints.joints.hips[1] - ground || 1) : 1;
-  return { root, mesh, skeleton, links, stride, moves: restMap(built, joints, prop, rest) };
+  return { root, mesh, skeleton, links, stride, moves: restMap(built, joints, prop, rest), body, joints: prop };
 }
 
 /** Puts the body in the character's current pose (call every frame while it animates). */

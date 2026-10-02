@@ -14,6 +14,8 @@ Drop in a GLB/FBX/OBJ from Meshy (or any humanoid mesh), or import straight from
 
 Besides humanoids it rigs **animals** (auto-detected legs, spine, neck, head and tail, with procedural walk/trot/gallop gaits), **custom creatures** (click on the model to build any skeleton: dragons, spiders, snakes, tentacles) and **props**: a chest lid, a door, a wheel or a turret. Each separate part gets a bone and pivot, and generated motions (spin, swing, slide, bob) or keyframes animate them.
 
+Clothed humanoids get **cloth physics** in the editor: each garment part gets a fabric (silk, cotton, wool, denim or leather, guessed from its name) whose weight, stiffness and damping decide how it hangs, folds and lags behind the body during playback. It isn't exported yet.
+
 Projects save to a `.rigforge` file and autosave in the browser, so you can pick up where you left off.
 
 Nothing is uploaded. Heavy compute runs in a Web Worker using Rust compiled to WebAssembly, with a TypeScript fallback.
@@ -146,6 +148,7 @@ The compiled WASM module is committed, so JavaScript-only contributors don't nee
 
 - **Done:** humanoid pipeline with finger bones, presets, retargeting, optimized export, three.js/R3F runtime; weight painting, keyframe editor, clip trimming, prop rigs, project files and autosave; state machines, layers, root motion and foot IK in the runtime.
 - **Also done:** quadruped template with gaits, custom creature skeletons, CLI batch mode, Meshy API import, spring bones, exported controller setups and an in-editor test drive.
+- **In progress:** cloth simulation with fabric presets (editor preview; baking it into the export comes next).
 - **Later:** a pluggable AI text-to-motion provider.
 
 ## Credits & licenses
