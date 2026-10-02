@@ -49,7 +49,7 @@ export interface ClothSetup {
 
 /** One frame of the animated character, in world space. */
 export interface ClothFrame {
-  /** Skinned position of every particle (3 per particle). */
+  /** Skinned position of every particle (3 per particle): its render vertex's bind position plus `ClothSim.lift`, skinned. */
   targets: Float32Array;
   /** Skinned normals of `bodyVertices` (3 per entry). */
   bodyNormals?: Float32Array;
@@ -68,6 +68,12 @@ export interface ClothSim {
   pinned: Uint8Array;
   /** Points actually simulated (the cage). */
   cageCount: number;
+  /**
+   * Bind-space offset per particle (3 each) that moves cloth starting inside
+   * the body out over it, smoothly. Add it to the bind position before
+   * skinning the targets; zero where the cloth already clears the body.
+   */
+  lift: Float32Array;
   /** Body vertices whose normals the backstops use, in the order `ClothFrame.bodyNormals` lists them. */
   bodyVertices: Uint32Array;
   /** Current particle positions (world). */
@@ -97,8 +103,75 @@ const MAX_SUBSTEPS = 40;
 const TELEPORT = 0.35;
 /** Cloth closer to the body than this can't sink into it (m). */
 const BACKSTOP_RANGE = 0.05;
+/** Cloth inside the body is lifted to this far outside it (m). */
+const LIFT_CLEARANCE = 0.006;
+/** Cloth deeper inside the body than this is left alone: the body is a poor fit there, not a tight garment (m). */
+const LIFT_MAX = 0.12;
 /** Clearance kept between cloth and the collision capsules (m). */
 const CAPSULE_MARGIN = 0.01;
+
+/**
+ * Where a garment starts inside the body (the body fitted to a tight or
+ * stylised outfit), how far each particle moves out over it: along the
+ * nearest body normal to LIFT_CLEARANCE outside, then smoothed across the
+ * garment so it inflates evenly instead of tenting. Pinned seams stay put.
+ */
+function liftOutOfBody(rest: Float32Array, tris: Uint32Array, clothCount: number, pinned: Uint8Array, body: ClothSetup['body']): Float32Array {
+  const lift = new Float32Array(rest.length);
+  if (!body || !body.positions.length || !clothCount) return lift;
+  const BP = body.positions, BN = body.normals;
+  const grid = new PointGrid(BP, 0.02);
+  // Required push along the body normal, per particle.
+  const need = new Float32Array(clothCount);
+  const dir = new Float32Array(clothCount * 3);
+  let any = false;
+  for (let p = 0; p < clothCount; p++) {
+    if (pinned[p]) continue;
+    const x = rest[p * 3], y = rest[p * 3 + 1], z = rest[p * 3 + 2];
+    const b = grid.nearest(x, y, z, 8);
+    if (b < 0) continue;
+    const nx = BN[b * 3], ny = BN[b * 3 + 1], nz = BN[b * 3 + 2];
+    const d = (x - BP[b * 3]) * nx + (y - BP[b * 3 + 1]) * ny + (z - BP[b * 3 + 2]) * nz;
+    if (d >= LIFT_CLEARANCE || d < -LIFT_MAX) continue;
+    need[p] = LIFT_CLEARANCE - d;
+    dir[p * 3] = nx;
+    dir[p * 3 + 1] = ny;
+    dir[p * 3 + 2] = nz;
+    lift[p * 3] = nx * need[p];
+    lift[p * 3 + 1] = ny * need[p];
+    lift[p * 3 + 2] = nz * need[p];
+    any = true;
+  }
+  if (!any) return lift;
+  const nb: number[][] = Array.from({ length: clothCount }, () => []);
+  for (let t = 0; t < tris.length; t += 3)
+    for (let k = 0; k < 3; k++) {
+      const a = tris[t + k], c = tris[t + ((k + 1) % 3)];
+      if (a < clothCount && c < clothCount) nb[a].push(c), nb[c].push(a);
+    }
+  // Smooth, then hold every particle at least as far out as it needs.
+  const next = new Float32Array(clothCount * 3);
+  for (let pass = 0; pass < 12; pass++) {
+    for (let p = 0; p < clothCount; p++) {
+      if (pinned[p] || !nb[p].length) {
+        for (let k = 0; k < 3; k++) next[p * 3 + k] = lift[p * 3 + k];
+        continue;
+      }
+      for (let k = 0; k < 3; k++) {
+        let m = 0;
+        for (const q of nb[p]) m += lift[q * 3 + k];
+        next[p * 3 + k] = 0.5 * lift[p * 3 + k] + (0.5 * m) / nb[p].length;
+      }
+      if (need[p] > 0) {
+        const o = p * 3;
+        const along = next[o] * dir[o] + next[o + 1] * dir[o + 1] + next[o + 2] * dir[o + 2];
+        if (along < need[p]) for (let k = 0; k < 3; k++) next[o + k] += dir[o + k] * (need[p] - along);
+      }
+    }
+    lift.set(next);
+  }
+  return lift;
+}
 
 /** Hashes points into cells for nearest-point queries. */
 class PointGrid {
@@ -315,6 +388,8 @@ export async function createClothSim(setup: ClothSetup): Promise<ClothSim> {
   clothTris.forEach((t, i) => {
     for (let k = 0; k < 3; k++) fineTris[i * 3 + k] = particleOf[I[t * 3 + k]];
   });
+  const lift = liftOutOfBody(rest, fineTris, clothCount, pinned, setup.body);
+  for (let i = 0; i < clothCount * 3; i++) rest[i] += lift[i];
 
   // Fabric per particle.
   const fineArea = new Float32Array(count);
@@ -462,6 +537,7 @@ export async function createClothSim(setup: ClothSetup): Promise<ClothSim> {
     vertexOf: Uint32Array.from(vertexList),
     pinned,
     cageCount: n,
+    lift,
     bodyVertices: solver.bodyVertices,
     positions,
     normals,

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { ClothController } from '../lib/cloth';
-import { fitBody, loadReferenceBody } from '../lib/body';
+import { buildBodyMesh, loadReferenceBody } from '../lib/body';
 
 /**
  * The cloth simulation for the current character, rebuilt when its parts,
@@ -35,8 +35,8 @@ export function useCloth() {
       const reference = await loadReferenceBody();
       if (cancelled) return;
       try {
-        const body = fitBody(built, joints, shape, reference);
-        const next = await ClothController.create(built, parts, fabrics, body, joints);
+        const rig = buildBodyMesh(built, joints, shape, '#000', reference);
+        const next = await ClothController.create(built, parts, fabrics, rig);
         if (cancelled) return;
         controller = next;
         ref.current = controller;

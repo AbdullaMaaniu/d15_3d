@@ -12,8 +12,8 @@ const CONTROLS: Array<{ id: BodyControl; label: string; hint: string }> = [
 ];
 
 /**
- * Body step: a realistic body fitted inside the clothes from the rig, the base
- * for clothing physics. The clothes are shown see-through so the fit is visible.
+ * Body step: an average adult body on the rig, the base for clothing physics.
+ * The clothes are shown see-through so both are visible.
  */
 export function BodyPanel() {
   const character = useStore((s) => s.character);
@@ -40,7 +40,7 @@ export function BodyPanel() {
       <div>
         <h2>Body</h2>
         <p>
-          A realistic human body fitted to your rig and slimmed to sit inside the clothes: the base for clothing physics. Shape it so it sits just inside them.
+          An average adult body at your character's height that moves with its rig: the base for clothing physics. Shape it with the sliders.
         </p>
       </div>
       <Section title="Shape">

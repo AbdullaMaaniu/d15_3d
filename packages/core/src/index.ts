@@ -16,7 +16,8 @@ export { buildSkinnedCharacter, resetPose, type RiggedCharacter } from './rig/bu
 export { generateBody, bodyParts, BODY_CONTROLS, type BodyShape, type BodyControl, type BodyControlDef, type BodyMesh } from './body/generate';
 export { createClothSim, fitClothCapsules, type ClothSim, type ClothSetup, type ClothFrame, type ClothCapsule } from './cloth/cloth';
 export { CLOTH_MATERIALS, clothMaterial, guessClothMaterial, type ClothMaterial, type ClothMaterialId } from './cloth/materials';
-export { fitReferenceBody, insideSlim, decodeReferenceBody, encodeReferenceBody, type ReferenceBody } from './body/reference';
+export { proportionJoints, humanJoints, changesProportions, PROPORTION_CONTROLS } from './body/proportions';
+export { fitReferenceBody, clothesGirth, type Girth, decodeReferenceBody, encodeReferenceBody, type ReferenceBody } from './body/reference';
 export {
   HUMANOID_REGIONS,
   REGION_PALETTE,

@@ -102,6 +102,53 @@ describe('cloth', () => {
     expect(sim.positions.every(Number.isFinite)).toBe(true);
   });
 
+  it('moves cloth that starts inside the body out over it', async () => {
+    // A 12 cm tube of cloth inside a 15 cm cylinder of body (a body fatter than the clothes).
+    const rows = 21, cols = 48, R = 0.12, BR = 0.15;
+    const pos: number[] = [];
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++) {
+        const a = (c / cols) * 2 * Math.PI;
+        pos.push(Math.cos(a) * R, 1.2 - r * 0.02, Math.sin(a) * R);
+      }
+    const index: number[] = [];
+    for (let r = 0; r < rows - 1; r++)
+      for (let c = 0; c < cols; c++) {
+        const a = r * cols + c, b = r * cols + ((c + 1) % cols);
+        index.push(a, b, a + cols, b, b + cols, a + cols);
+      }
+    const bp: number[] = [], bn: number[] = [];
+    for (let y = 0.6; y <= 1.4; y += 0.01)
+      for (let c = 0; c < 100; c++) {
+        const a = (c / 100) * 2 * Math.PI;
+        bp.push(Math.cos(a) * BR, y, Math.sin(a) * BR);
+        bn.push(Math.cos(a), 0, Math.sin(a));
+      }
+    const positions = Float32Array.from(pos);
+    const sim = await createClothSim({
+      positions,
+      index: Uint32Array.from(index),
+      triangleMaterial: new Int16Array(index.length / 3),
+      materials: [clothMaterial('cotton')!],
+      body: { positions: Float32Array.from(bp), normals: Float32Array.from(bn) },
+      capsules: [{ a: [0, 0.6, 0], b: [0, 1.4, 0], ra: BR, rb: BR }],
+    });
+    const frame = restFrame(sim, positions);
+    for (let i = 0; i < frame.targets.length; i++) frame.targets[i] += sim.lift[i];
+    const radius = (a: Float32Array, p: number) => Math.hypot(a[p * 3], a[p * 3 + 2]);
+    // The lifted rest shape already clears the body.
+    for (let p = 0; p < sim.count; p++) expect(radius(frame.targets, p)).toBeGreaterThan(BR);
+    for (let f = 0; f < 120; f++) sim.step(1 / 60, frame);
+    let inside = 0, loose = 0;
+    for (let p = 0; p < sim.count; p++) {
+      if (radius(sim.positions, p) < BR) inside++;
+      loose = Math.max(loose, radius(sim.positions, p) - BR);
+    }
+    expect(inside).toBe(0);
+    // Snug over the body, not ballooning.
+    expect(loose).toBeLessThan(0.03);
+  });
+
   it('fits capsules to the limbs and torso of the reference body', () => {
     const ref = decodeReferenceBody(readFileSync(new URL('../assets/reference-body.bin', import.meta.url)));
     const caps = fitClothCapsules(ref, ref.joints.joints);
