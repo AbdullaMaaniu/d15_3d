@@ -23,7 +23,7 @@ import {
   splitParts,
 } from '@rigforge/core';
 import { ALL_STEPS, accessoryDefs, type ClipEntry, type RigType, type useStore } from '../store';
-import type { RegionDef } from '@rigforge/core';
+import type { BodyShape, RegionDef } from '@rigforge/core';
 import type { ControllerSetup, SpringConfig } from '@rigforge/three';
 
 type StoreState = ReturnType<typeof useStore.getState>;
@@ -57,6 +57,8 @@ interface ProjectFile {
   armSpacing?: number;
   /** Recolourable regions: names, a region per triangle (base64 bytes) and preview colours. */
   parts?: { defs: RegionDef[]; faces: string; tints: Array<string | null> } | null;
+  /** Generated body shape (Body step). */
+  bodyShape?: BodyShape;
   /** Whether the prop rig was built (props don't store weights: they're rigid). */
   propBuilt?: boolean;
 }
@@ -117,6 +119,7 @@ export async function saveProject(s: StoreState): Promise<Blob> {
     springs: s.springs,
     controller: s.controller,
     parts: s.parts ? { defs: s.parts.defs, faces: b64.encode(s.parts.faces), tints: s.parts.tints } : null,
+    bodyShape: s.bodyShape,
     armSpacing: s.armSpacing,
     propBuilt: s.rigType === 'prop' && !!built,
     rig: built && s.rigType !== 'prop' && s.joints
@@ -192,7 +195,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     Object.assign(patch, { rigType: 'prop', propSplit: split, propRig: file.propRig, selectedBone: 'root' });
     if (file.propBuilt) {
       const built = buildPropCharacter(normalizedGeometry, materials, split, file.propRig, 'Prop');
-      Object.assign(patch, { character: { root: built.root, built }, binding: null, unlocked: ALL_STEPS, step: ['parts', 'animate', 'export'].includes(file.step) ? file.step : 'rig' });
+      Object.assign(patch, { character: { root: built.root, built }, binding: null, unlocked: ALL_STEPS, step: ['parts', 'body', 'animate', 'export'].includes(file.step) ? file.step : 'rig' });
       // Clips bake once the character is in the store (see openProject).
       (patch as any).pendingPropClips = file.clips;
     }
@@ -207,6 +210,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     springs: file.springs ?? { chains: [], colliders: [] },
     // Re-applied to the mesh once the character is in the store.
     parts: file.parts ? { defs: file.parts.defs, faces: b64.decode(file.parts.faces), tints: file.parts.tints } : null,
+    bodyShape: file.bodyShape ?? {},
     controller: file.controller ?? null,
   });
   const baseDefs = (defs: readonly import('@rigforge/core').BoneDef[]) => [...defs, ...accessoryDefs(file.extraBones ?? [])];
@@ -223,7 +227,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
         character: { root: built.root, built },
         binding: null,
         unlocked: ALL_STEPS,
-        step: ['parts', 'animate', 'export'].includes(file.step) ? file.step : 'rig',
+        step: ['parts', 'body', 'animate', 'export'].includes(file.step) ? file.step : 'rig',
       });
       (patch as any).pendingPropClips = file.clips;
       return patch;
@@ -242,7 +246,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
       activeClip: clips[0]?.id ?? null,
       playing: clips.length > 0,
       unlocked: ALL_STEPS,
-      step: ['parts', 'animate', 'export'].includes(file.step) ? file.step : 'rig',
+      step: ['parts', 'body', 'animate', 'export'].includes(file.step) ? file.step : 'rig',
     });
   }
   return patch;

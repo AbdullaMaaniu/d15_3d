@@ -82,6 +82,7 @@ import {
   MAX_REGIONS,
   REGION_PALETTE,
   type RegionContext,
+  type BodyShape,
 } from '@rigforge/core';
 import presetPack from '@rigforge/presets/clips.json';
 import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleCreature, loadSampleProp, type LoadedFile } from './lib/loaders';
@@ -91,8 +92,8 @@ import { remeshPrepared, type RemeshInfo, type RemeshSettings } from './lib/reme
 import { buildRegionContext, type PartsState } from './lib/parts';
 import { guessController, type ControllerSetup, type SpringChainDef, type SpringColliderDef, type SpringConfig } from '@rigforge/three';
 
-export type Step = 'import' | 'orient' | 'rig' | 'parts' | 'animate' | 'export';
-export const STEPS: Step[] = ['import', 'orient', 'rig', 'parts', 'animate', 'export'];
+export type Step = 'import' | 'orient' | 'rig' | 'parts' | 'body' | 'animate' | 'export';
+export const STEPS: Step[] = ['import', 'orient', 'rig', 'parts', 'body', 'animate', 'export'];
 /** Every step unlocked (a rigged character). */
 export const ALL_STEPS = STEPS.length - 1;
 
@@ -240,6 +241,10 @@ interface State {
   /** Region under the cursor in the Parts step. */
   hoverPart: number | null;
 
+  /** Shape of the generated body (Body step); multipliers per control. */
+  bodyShape: BodyShape;
+  bodyInfo: { triangles: number; ms: number } | null;
+
   exportName: string;
   exportPreset: 'web' | 'mobile' | 'lossless';
   exportResult: ExportResult | null;
@@ -288,6 +293,7 @@ interface Actions {
   removePart(i: number): void;
   setPartTint(i: number, color: string | null): void;
   previewPartsMotion(on: boolean): void;
+  setBodyShape(patch: BodyShape): void;
   buildRig(): Promise<void>;
   useExistingRig(): void;
   editJoints(): void;
@@ -430,6 +436,8 @@ export const useStore = create<State & Actions>()((set, get) => ({
   partsVersion: 0,
   partsHistory: { undo: 0, redo: 0 },
   hoverPart: null,
+  bodyShape: {},
+  bodyInfo: null,
   exportName: 'character',
   exportPreset: 'web',
   exportResult: null,
@@ -447,9 +455,13 @@ export const useStore = create<State & Actions>()((set, get) => ({
   goto(step) {
     const i = STEPS.indexOf(step);
     if (i > get().unlocked) return;
+    const from = get().step;
     set({ step, paint: { ...get().paint, active: false }, keyEdit: { ...get().keyEdit, clipId: null } });
     // Parts are painted in the bind pose, where the brush lines up with the mesh.
-    if (step === 'parts') get().previewPartsMotion(false);
+    if (step === 'parts' || step === 'body') get().previewPartsMotion(false);
+    // The body is seen through the clothes.
+    if (step === 'body') set({ shading: 'xray' });
+    else if (from === 'body' && get().shading === 'xray') set({ shading: 'textured' });
   },
 
   async loadFromFiles(files) {
@@ -745,6 +757,15 @@ export const useStore = create<State & Actions>()((set, get) => ({
     }
     set({ playing: false, testClip: null });
     get().character?.root.traverse((o: any) => o.isSkinnedMesh && o.skeleton.pose());
+  },
+
+  setBodyShape(patch) {
+    const next = { ...get().bodyShape };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined || Math.abs(v - 1) < 1e-6) delete next[k as keyof BodyShape];
+      else next[k as keyof BodyShape] = v;
+    }
+    set({ bodyShape: next });
   },
 
   setArmSpacing(degrees) {
@@ -1496,6 +1517,7 @@ function replacePrepared(prepared: PreparedMesh) {
   resetPartsHistory();
   useStore.setState({
     parts: null,
+    bodyShape: {},
     prepared,
     report,
     normalized: null,
@@ -1576,7 +1598,7 @@ useStore.subscribe((s, prev) => {
   const changed =
     s.prepared !== prev.prepared || s.joints !== prev.joints || s.character !== prev.character || s.clips !== prev.clips ||
     s.weightsVersion !== prev.weightsVersion || s.rotation !== prev.rotation || s.height !== prev.height || s.exportName !== prev.exportName ||
-    s.partsVersion !== prev.partsVersion || s.parts !== prev.parts;
+    s.partsVersion !== prev.partsVersion || s.parts !== prev.parts || s.bodyShape !== prev.bodyShape;
   if (!changed || canSave(s)) return;
   if (autosaveTimer) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(async () => {

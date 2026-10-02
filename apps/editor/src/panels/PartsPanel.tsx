@@ -38,6 +38,11 @@ export function PartsPanel() {
       ) : (
         <button className="btn block" onClick={() => goto('animate')}>Skip to animations →</button>
       )}
+      {rigType === 'humanoid' && (
+        <div className="link-row">
+          <button className="btn small ghost" onClick={() => goto('body')}>Optional: generate the body inside →</button>
+        </div>
+      )}
     </>
   );
 }
