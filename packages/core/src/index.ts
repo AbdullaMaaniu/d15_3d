@@ -14,7 +14,8 @@ export { detectFingers, type FingerDetection } from './rig/fingers';
 export { computeSkinWeights, computeSkinWeightsAsync, boneSegments, type SkinWeights, type WeightOptions } from './rig/weights';
 export { buildSkinnedCharacter, resetPose, type RiggedCharacter } from './rig/build';
 export { generateBody, bodyParts, BODY_CONTROLS, type BodyShape, type BodyControl, type BodyControlDef, type BodyMesh } from './body/generate';
-export { fitReferenceBody, insideSlim, decodeReferenceBody, encodeReferenceBody, type ReferenceBody } from './body/reference';
+export { proportionJoints, humanJoints, changesProportions, PROPORTION_CONTROLS } from './body/proportions';
+export { fitReferenceBody, decodeReferenceBody, encodeReferenceBody, type ReferenceBody } from './body/reference';
 export {
   HUMANOID_REGIONS,
   REGION_PALETTE,

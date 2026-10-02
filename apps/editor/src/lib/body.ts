@@ -1,5 +1,5 @@
-import { BufferGeometry, Float32BufferAttribute, Matrix4, MeshStandardMaterial, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute } from 'three';
-import { decodeReferenceBody, fitReferenceBody, generateBody, insideSlim, tsKernels, type BodyShape, type JointMap, type ReferenceBody } from '@rigforge/core';
+import { Bone, BufferGeometry, Float32BufferAttribute, Group, Matrix4, MeshStandardMaterial, Skeleton, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute } from 'three';
+import { decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, type BodyShape, type JointMap, type ReferenceBody } from '@rigforge/core';
 import type { RiggedCharacter } from '@rigforge/core';
 import referenceUrl from '@rigforge/core/assets/reference-body.bin?url';
 
@@ -17,30 +17,53 @@ export function loadReferenceBody(): Promise<ReferenceBody | null> {
   return reference;
 }
 
-const slimming = new WeakMap<RiggedCharacter, { joints: JointMap; slim: number }>();
-
-/** How much the reference body is slimmed to sit inside this character's clothes (measured once per rig). */
-function insideCharacter(built: RiggedCharacter, joints: JointMap, ref: ReferenceBody): number {
-  const cached = slimming.get(built);
-  if (cached?.joints === joints) return cached.slim;
-  const g = built.mesh.geometry;
-  const positions = g.getAttribute('position').array as Float32Array;
-  g.computeBoundingBox();
-  const height = g.boundingBox!.max.y - g.boundingBox!.min.y;
-  const grid = tsKernels.voxelize({ positions, index: g.index ? Uint32Array.from(g.index.array) : null, dx: height / 200 });
-  const slim = insideSlim(ref, joints, grid);
-  slimming.set(built, { joints, slim });
-  return slim;
+/** The body with its own skeleton, which follows the character's skeleton (see syncBodyPose). */
+export interface BodyRig {
+  /** Holds the body's bones and mesh, in the character's rig space. */
+  root: Group;
+  mesh: SkinnedMesh;
+  skeleton: Skeleton;
+  /** Body bone and the character bone it follows, with how far the body moves for each unit the character moves. */
+  links: Array<{ bone: Bone; source: Bone; restPosition: Bone['position']; sourceRest: Bone['position'] }>;
+  /** Body hips height over character hips height: scales root motion so the feet keep pace. */
+  stride: number;
 }
 
 /**
- * The body as a skinned mesh driven by the character's own skeleton, so it
- * moves with every clip: the reference body fitted to the rig and slimmed to
- * sit inside the clothes, or a generated one when the reference isn't available. Shown in the Body step (not exported yet).
+ * The body as a skinned mesh on its own skeleton, driven by the character's
+ * skeleton so it moves with every clip. The skeleton has an average adult's
+ * proportions at the rig's height, in the rig's pose (however stylised the
+ * rig), then the shape's proportion controls: the reference body fits it
+ * without stretching. A generated body stands in when the reference isn't
+ * available. Shown in the Body step (not exported yet).
  */
-export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: BodyShape, skinColor: string, ref: ReferenceBody | null): SkinnedMesh {
-  const body = ref ? fitReferenceBody(ref, joints, shape, insideCharacter(built, joints, ref)) : generateBody(joints, shape);
-  const names = built.skeleton.bones.map((b) => b.name);
+export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: BodyShape, skinColor: string, ref: ReferenceBody | null): BodyRig {
+  const human = ref ? humanJoints(ref.joints, joints) : joints;
+  const prop = proportionJoints(human, shape);
+  const body = ref ? fitReferenceBody(ref, prop, shape, { rest: human }) : generateBody(prop, shape);
+  // A copy of the character's skeleton with the body's proportions. Rest
+  // rotations are identity, as on the character, so poses copy across bone for bone.
+  const bones: Bone[] = [];
+  const byName = new Map<string, Bone>();
+  const links: BodyRig['links'] = [];
+  for (const source of built.skeleton.bones) {
+    const bone = new Bone();
+    bone.name = source.name;
+    const parent = source.parent && byName.get(source.parent.name);
+    const p = prop.joints[source.name], pp = parent ? prop.joints[parent.name] : undefined;
+    if (p && (pp || !parent)) bone.position.set(p[0] - (pp?.[0] ?? 0), p[1] - (pp?.[1] ?? 0), p[2] - (pp?.[2] ?? 0));
+    else bone.position.copy(source.userData.restPosition ?? source.position);
+    bone.quaternion.copy(source.userData.restQuaternion ?? source.quaternion);
+    if (parent) parent.add(bone);
+    bones.push(bone);
+    byName.set(bone.name, bone);
+    links.push({ bone, source, restPosition: bone.position.clone(), sourceRest: (source.userData.restPosition ?? source.position).clone() });
+  }
+  const root = new Group();
+  root.name = 'BodyRig';
+  root.matrixAutoUpdate = false;
+  root.add(bones[0]);
+  const names = bones.map((b) => b.name);
   const remap = body.bones.map((n) => Math.max(0, names.indexOf(n)));
   const skinIndex = new Uint16Array(body.skinIndex.length);
   for (let i = 0; i < skinIndex.length; i++) skinIndex[i] = remap[body.skinIndex[i]];
@@ -54,7 +77,25 @@ export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: B
   mesh.name = 'Body';
   mesh.frustumCulled = false;
   mesh.userData.rfBody = true;
+  root.add(mesh);
+  root.updateMatrixWorld(true);
+  const skeleton = new Skeleton(bones);
   // Geometry is in rig space, like the character's own mesh.
-  mesh.bind(built.skeleton, new Matrix4());
-  return mesh;
+  mesh.bind(skeleton, new Matrix4());
+  const ground = Math.min(...Object.values(joints.tails).map((t) => t[1]), ...Object.values(joints.joints).map((t) => t[1]));
+  const groundBody = Math.min(...Object.values(prop.tails).map((t) => t[1]), ...Object.values(prop.joints).map((t) => t[1]));
+  const stride = joints.joints.hips && prop.joints.hips ? (prop.joints.hips[1] - groundBody) / (joints.joints.hips[1] - ground || 1) : 1;
+  return { root, mesh, skeleton, links, stride };
+}
+
+/** Puts the body in the character's current pose (call every frame while it animates). */
+export function syncBodyPose(rig: BodyRig, built: RiggedCharacter): void {
+  rig.root.matrix.copy(built.root.matrixWorld);
+  for (const { bone, source, restPosition, sourceRest } of rig.links) {
+    bone.quaternion.copy(source.quaternion);
+    bone.scale.copy(source.scale);
+    // Moves away from the rest position (root motion, bobbing), scaled to the body's size.
+    bone.position.copy(source.position).sub(sourceRest).multiplyScalar(rig.stride).add(restPosition);
+  }
+  rig.root.updateMatrixWorld(true);
 }
