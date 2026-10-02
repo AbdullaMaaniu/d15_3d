@@ -1,5 +1,5 @@
 import { Bone, BufferGeometry, Float32BufferAttribute, Group, Matrix4, Vector3, MeshStandardMaterial, Skeleton, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute } from 'three';
-import { boneEnd, clothesGirth, decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, tsKernels, PROPORTION_CONTROLS, type BodyMesh, type BodyShape, type Girth, type JointMap, type ReferenceBody } from '@rigforge/core';
+import { boneEnd, clothesGirth, decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, tsKernels, PROPORTION_CONTROLS, type BodyMesh, type BodyShape, type GarmentSeparation, type Girth, type JointMap, type ReferenceBody } from '@rigforge/core';
 import type { RiggedCharacter } from '@rigforge/core';
 import referenceUrl from '@rigforge/core/assets/reference-body.bin?url';
 import { garmentRegions, useStore } from '../store';
@@ -135,10 +135,24 @@ export function restOnBody(moves: BoneMove[], positions: ArrayLike<number>, skin
  * Puts the character's clothes on the body: its mesh follows the body's
  * skeleton instead of its own, moved and stretched bone by bone from the
  * character's proportions to the body's, so the sleeves, trousers and shoes
- * stay on the body's limbs in every pose. Returns the undo.
+ * stay on the body's limbs in every pose. `mesh` is the character's own by
+ * default, or a separated garment on its skeleton. Returns the undo.
  */
-export function dressBody(rig: BodyRig, built: RiggedCharacter): () => void {
-  return dressMesh(rig, built.mesh);
+export function dressBody(rig: BodyRig, built: RiggedCharacter, mesh: SkinnedMesh = built.mesh): () => void {
+  return dressMesh(rig, mesh);
+}
+
+/**
+ * The separated garments and head cut as they sit on the body, for finding
+ * the body's covered triangles. The cut, across the neck, moves with the neck.
+ */
+export function dressedSeparation(rig: BodyRig, sep: GarmentSeparation): Pick<GarmentSeparation, 'pieces' | 'headCut'> {
+  const pieces = sep.pieces.map((p) => ({ ...p, positions: restOnBody(rig.moves, p.positions, p.skinIndex, p.skinWeight) }));
+  const cut = sep.headCut;
+  const neck = rig.skeleton.bones.findIndex((b) => b.name === 'neck');
+  if (!cut || neck < 0) return { pieces, headCut: cut };
+  const move = (q: [number, number, number]) => Array.from(restOnBody(rig.moves, q, [neck, 0, 0, 0], [1, 0, 0, 0])) as [number, number, number];
+  return { pieces, headCut: { ...cut, point: move(cut.point), center: move(cut.center) } };
 }
 
 /** `dressBody` for any mesh bound to the character's skeleton, such as the separated garments. Returns the undo. */
