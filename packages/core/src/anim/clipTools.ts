@@ -181,7 +181,7 @@ export function symmetrizeArms(clip: NormalizedClip, from: 'left' | 'right'): No
   const idx = new Map(clip.bones.map((b, i) => [b, i]));
   const rotations = clip.rotations.slice();
   const N = clip.frames;
-  const half = Math.round(N / 2);
+  const half = halfCycle(clip, idx);
   for (let i = 0; i < B; i++) {
     const m = ARM.exec(clip.bones[i]);
     if (!m || m[1] === from) continue;
@@ -197,6 +197,34 @@ export function symmetrizeArms(clip: NormalizedClip, from: 'left' | 'right'): No
     }
   }
   return { ...clip, rotations };
+}
+
+/**
+ * How many frames apart the two sides of a symmetric gait are: the shift that
+ * best maps each leg onto the other, mirrored. A loop can hold more than one
+ * stride, so half the clip isn't necessarily half a cycle (with two strides it
+ * is a whole one, and the rebuilt arm would swing with its own leg).
+ */
+function halfCycle(clip: NormalizedClip, idx: Map<string, number>): number {
+  const N = clip.frames;
+  const legs = ['leftUpperLeg', 'leftLowerLeg'].filter((b) => idx.has(b) && idx.has(mirrorBoneName(b)));
+  if (!legs.length) return Math.round(N / 2);
+  const B = clip.bones.length, r = clip.rotations;
+  let best = Math.round(N / 2), bestErr = Infinity;
+  for (let s = 1; s < N; s++) {
+    let err = 0;
+    for (const b of legs) {
+      const i = idx.get(b)!, j = idx.get(mirrorBoneName(b))!;
+      for (let f = 0; f < N; f++) {
+        const a = (f * B + i) * 4, o = (((f + s) % N) * B + j) * 4;
+        // Mirrored across the YZ plane: (x, -y, -z, w).
+        const d = r[a] * r[o] - r[a + 1] * r[o + 1] - r[a + 2] * r[o + 2] + r[a + 3] * r[o + 3];
+        err += 1 - d * d;
+      }
+    }
+    if (err < bestErr) [best, bestErr] = [s, err];
+  }
+  return best;
 }
 
 export function clipDuration(clip: NormalizedClip): number {
