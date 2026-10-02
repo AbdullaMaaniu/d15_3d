@@ -1,11 +1,12 @@
-import { AnimationClip, BoxGeometry, CapsuleGeometry, CylinderGeometry, SphereGeometry, Group, LoadingManager, Mesh, MeshStandardMaterial, type Object3D } from 'three';
+import { AnimationClip, BoxGeometry, BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute, CapsuleGeometry, CylinderGeometry, SphereGeometry, Group, LoadingManager, Mesh, MeshStandardMaterial, type Object3D } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
 import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
-import { createMannequin, createQuadrupedMannequin } from '@rigforge/core';
+import { createClothedSample, createMannequin, createQuadrupedMannequin } from '@rigforge/core';
+import { loadReferenceBody } from './body';
 
 export interface LoadedFile {
   name: string;
@@ -75,6 +76,23 @@ export function loadSample(pose: 'T' | 'A' = 'A'): LoadedFile {
   const root = new Group();
   root.add(mesh);
   return { name: `mannequin-${pose.toLowerCase()}-pose.glb`, scene: root, animations: [] };
+}
+
+/** Sample clothed character: one mesh with the clothes baked in, like a Meshy export. */
+export async function loadClothedSample(): Promise<LoadedFile> {
+  const ref = await loadReferenceBody();
+  if (!ref) throw new Error('The clothed sample could not be loaded.');
+  const s = createClothedSample(ref);
+  const g = new BufferGeometry();
+  g.setAttribute('position', new Float32BufferAttribute(s.positions, 3));
+  g.setAttribute('normal', new Float32BufferAttribute(s.normals, 3));
+  g.setAttribute('color', new Float32BufferAttribute(s.colors, 3));
+  g.setIndex(new Uint32BufferAttribute(s.index, 1));
+  const mesh = new Mesh(g, new MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }));
+  mesh.name = 'ClothedSample';
+  const root = new Group();
+  root.add(mesh);
+  return { name: 'clothed-sample.glb', scene: root, animations: [] };
 }
 
 export function hasSkeleton(scene: Object3D): boolean {

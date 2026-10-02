@@ -48,7 +48,7 @@ function insideClothes(built: RiggedCharacter, ref: ReferenceBody, joints: Joint
  * by `stretch` (body length over character length). The rest rotations are
  * the same, so that's all there is to it.
  */
-interface BoneMove {
+export interface BoneMove {
   from: Vector3;
   to: Vector3;
   dir: Vector3;
@@ -82,16 +82,25 @@ function restMap(built: RiggedCharacter, joints: JointMap, prop: JointMap, bodyR
 /** The character's rest surface moved onto the body's skeleton (rig space), as the body's skinning will place it. */
 function clothesOnBody(built: RiggedCharacter, moves: BoneMove[]): Float32Array {
   const g = built.mesh.geometry;
-  const pos = g.getAttribute('position'), si = g.getAttribute('skinIndex'), sw = g.getAttribute('skinWeight');
-  const out = new Float32Array(pos.count * 3);
+  return restOnBody(moves, g.getAttribute('position').array, g.getAttribute('skinIndex').array, g.getAttribute('skinWeight').array);
+}
+
+/**
+ * Rest positions of a surface skinned to the character's skeleton (rig space),
+ * moved onto the body's skeleton as `dressMesh` places them: for comparing
+ * the clothes with the body at rest.
+ */
+export function restOnBody(moves: BoneMove[], positions: ArrayLike<number>, skinIndex: ArrayLike<number>, skinWeight: ArrayLike<number>): Float32Array {
+  const V = positions.length / 3;
+  const out = new Float32Array(V * 3);
   const p = new Vector3(), d = new Vector3(), q = new Vector3();
-  for (let v = 0; v < pos.count; v++) {
-    p.fromBufferAttribute(pos, v);
+  for (let v = 0; v < V; v++) {
+    p.set(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]);
     q.set(0, 0, 0);
     for (let k = 0; k < 4; k++) {
-      const w = sw.getComponent(v, k);
+      const w = skinWeight[v * 4 + k];
       if (w <= 0) continue;
-      const m = moves[si.getComponent(v, k)];
+      const m = moves[skinIndex[v * 4 + k]];
       d.subVectors(p, m.from);
       d.addScaledVector(m.dir, (m.stretch - 1) * d.dot(m.dir)).add(m.to);
       q.addScaledVector(d, w);
@@ -110,7 +119,11 @@ function clothesOnBody(built: RiggedCharacter, moves: BoneMove[]): Float32Array 
  * stay on the body's limbs in every pose. Returns the undo.
  */
 export function dressBody(rig: BodyRig, built: RiggedCharacter): () => void {
-  const mesh = built.mesh;
+  return dressMesh(rig, built.mesh);
+}
+
+/** `dressBody` for any mesh bound to the character's skeleton, such as the separated garments. Returns the undo. */
+export function dressMesh(rig: BodyRig, mesh: SkinnedMesh): () => void {
   const skeleton = mesh.skeleton, bindMatrix = mesh.bindMatrix.clone();
   const inverses = rig.moves.map((m, i) => {
     const dl = m.dir.clone().transformDirection(m.toLocal);
