@@ -219,4 +219,51 @@ describe('retargeting', () => {
     }
     expect(Math.max(...lh)).toBeGreaterThan(1.45);
   });
+
+  it('walks with each arm swinging against the leg on its side', async () => {
+    const c = await rig('A');
+    const binding = bindSkeleton(c.root, autoMapBones(c.root).map);
+    const walk = decodeClip(pack.clips.find((x) => x.id === 'walk')!);
+    const baked = bakeClip(binding, walk, { inPlace: true });
+    const mixer = new AnimationMixer(c.root);
+    mixer.clipAction(baked).play();
+    type End = 'leftHand' | 'rightHand' | 'leftFoot' | 'rightFoot';
+    const forward = (b: End) => c.bones[b].getWorldPosition(new Vector3()).z - c.bones.hips.getWorldPosition(new Vector3()).z;
+    const track: Record<End, number[]> = { leftHand: [], rightHand: [], leftFoot: [], rightFoot: [] };
+    for (let t = 0; t < baked.duration; t += baked.duration / 24) {
+      mixer.setTime(t);
+      c.root.updateMatrixWorld(true);
+      for (const b of Object.keys(track) as End[]) track[b].push(forward(b));
+    }
+    const corr = (a: number[], b: number[]) => {
+      const ma = a.reduce((s, x) => s + x) / a.length, mb = b.reduce((s, x) => s + x) / b.length;
+      let n = 0, da = 0, db = 0;
+      a.forEach((x, i) => ((n += (x - ma) * (b[i] - mb)), (da += (x - ma) ** 2), (db += (b[i] - mb) ** 2)));
+      return n / Math.sqrt(da * db);
+    };
+    expect(corr(track.leftHand, track.leftFoot)).toBeLessThan(-0.5);
+    expect(corr(track.rightHand, track.rightFoot)).toBeLessThan(-0.5);
+    expect(corr(track.leftHand, track.rightHand)).toBeLessThan(-0.5);
+  });
+
+  it('rebuilds the lazy arm half a stride later, however many strides the loop holds', () => {
+    // Two strides in 16 frames: the legs mirror each other 4 frames apart, not 8.
+    const bones = ['hips', 'leftUpperLeg', 'rightUpperLeg', 'leftUpperArm', 'rightUpperArm'];
+    const frames = 16;
+    const B = bones.length;
+    const rotations = new Float32Array(frames * B * 4);
+    const swing = (f: number, side: number) => new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.5 * Math.sin(((f / frames) * 2 + side) * 2 * Math.PI));
+    for (let f = 0; f < frames; f++) {
+      new Quaternion().toArray(rotations, (f * B) * 4);
+      swing(f, 0).toArray(rotations, (f * B + 1) * 4);
+      swing(f, 0.5).toArray(rotations, (f * B + 2) * 4);
+      swing(f, 0.5).toArray(rotations, (f * B + 3) * 4); // left arm against the left leg
+      new Quaternion().toArray(rotations, (f * B + 4) * 4); // right arm lazy
+    }
+    const out = symmetrizeArms({ name: 'w', fps: 30, frames, bones, rotations, hips: new Float32Array(frames * 3), loop: true }, 'left');
+    for (let f = 0; f < frames; f++) {
+      const got = new Quaternion().fromArray(out.rotations, (f * B + 4) * 4);
+      expect(got.angleTo(swing(f, 0))).toBeLessThan(1e-3); // against the right leg
+    }
+  });
 });
