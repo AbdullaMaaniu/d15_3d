@@ -36,7 +36,7 @@ export async function computeWeights(
   index: Uint32Array,
   joints: JointMap,
   skeleton: SkeletonKind,
-  settings: WeightSettings,
+  settings: WeightSettings & { exclusive?: { vertices: Uint8Array; bones: number[]; shared: number[] } },
   onProgress: (stage: string, fraction: number) => void,
 ): Promise<SkinWeights> {
   // One weights job at a time: jobs share the worker pool's sessions.

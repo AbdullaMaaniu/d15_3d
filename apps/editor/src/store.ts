@@ -83,6 +83,15 @@ import {
   REGION_PALETTE,
   type RegionContext,
   type BodyShape,
+  applyFaceWeights,
+  attachExpressions,
+  cleanHairWeights,
+  detectFace,
+  faceDefs,
+  faceJoints,
+  hairChains,
+  hairTriangles,
+  type FaceLandmarks,
 } from '@rigforge/core';
 import presetPack from '@rigforge/presets/clips.json';
 import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleCreature, loadSampleProp, type LoadedFile } from './lib/loaders';
@@ -131,6 +140,12 @@ export type RigType = 'humanoid' | 'quadruped' | 'creature' | 'prop';
 
 /** Bone definitions for the current skinned rig type. */
 export function skeletonDefs(): readonly BoneDef[] {
+  const s = useStore.getState();
+  return s.face && s.rigType === 'humanoid' ? [...bodyDefs(), ...faceDefs()] : bodyDefs();
+}
+
+/** The bones skin weights are computed for: everything but the face, which is weighted from its landmarks. */
+function bodyDefs(): readonly BoneDef[] {
   const s = useStore.getState();
   if (s.rigType === 'creature') return creatureDefs(s.creatureBones);
   const base = s.rigType === 'quadruped' ? QUADRUPED_DEFS : humanoidDefs(s.fingers);
@@ -203,6 +218,16 @@ interface State {
   accessoryMode: boolean;
   springs: SpringConfig;
   springPreview: boolean;
+  /** Give humanoids a jaw, eye bones and expressions when building. */
+  faceRig: boolean;
+  /** Where the face was found on the built rig (null = no face bones). */
+  face: FaceLandmarks | null;
+  /** Expression weights shown in the viewport (preview only, not exported). */
+  expressionPreview: Record<string, number>;
+  /** Hair triangles the automatic hair chains were made from (original triangle order). */
+  hairFaces: Uint8Array | null;
+  /** What the last hair search found, for the Rig panel. */
+  hairNote: string | null;
   propSplit: PartSplit | null;
   propRig: PropRig | null;
 
@@ -294,6 +319,10 @@ interface Actions {
   setPartTint(i: number, color: string | null): void;
   previewPartsMotion(on: boolean): void;
   setBodyShape(patch: BodyShape): void;
+  setFaceRig(on: boolean): void;
+  setExpression(name: string, weight: number): void;
+  addHairSprings(): Promise<void>;
+  removeHairSprings(): Promise<void>;
   buildRig(): Promise<void>;
   useExistingRig(): void;
   editJoints(): void;
@@ -411,6 +440,11 @@ export const useStore = create<State & Actions>()((set, get) => ({
   accessoryMode: false,
   springs: { chains: [], colliders: [] },
   springPreview: true,
+  faceRig: true,
+  face: null,
+  expressionPreview: {},
+  hairFaces: null,
+  hairNote: null,
   propSplit: null,
   propRig: null,
   character: null,
@@ -768,6 +802,75 @@ export const useStore = create<State & Actions>()((set, get) => ({
     set({ bodyShape: next });
   },
 
+  setFaceRig(on) {
+    set({ faceRig: on });
+    if (get().character?.built) void get().buildRig();
+  },
+
+  setExpression(name, weight) {
+    const mesh = get().character?.built?.mesh;
+    const next = { ...get().expressionPreview, [name]: weight };
+    if (!weight) delete next[name];
+    set({ expressionPreview: next });
+    const i = mesh?.morphTargetDictionary?.[name];
+    if (mesh && i !== undefined) mesh.morphTargetInfluences![i] = weight;
+  },
+
+  async addHairSprings() {
+    const built = get().character?.built;
+    const { normalized, joints } = get();
+    if (!built || !normalized || !joints) return;
+    // The Parts step's hair if there is one, else the same automatic split it would suggest.
+    const parts = get().parts;
+    const pc = partsContext();
+    if (!pc) return;
+    let faces: Uint8Array;
+    const hairIndex = parts?.defs.findIndex((d) => /hair/i.test(d.name)) ?? -1;
+    if (parts && hairIndex >= 0 && parts.faces.length === pc.ctx.triCount) faces = hairTriangles({ defs: parts.defs, faces: parts.faces }, pc.ctx, hairIndex);
+    else {
+      const names = built.mesh.skeleton.bones.map((b) => b.name);
+      const orig = built.mesh.userData.rfOriginal as { index: Uint32Array } | undefined;
+      const idx = orig?.index ?? (built.mesh.geometry.index!.array as ArrayLike<number>);
+      const g = built.mesh.geometry;
+      const tb = triangleBones(idx, g.attributes.skinIndex.array as ArrayLike<number>, g.attributes.skinWeight.array as ArrayLike<number>, names);
+      const auto = autoRegionsHumanoid(pc.ctx, tb);
+      faces = hairTriangles(auto, pc.ctx, auto.defs.findIndex((d) => d.name === 'Hair'));
+    }
+    const hairCount = faces.reduce((a, b) => a + b, 0);
+    // Old automatic chains make way for the new ones.
+    const kept = get().extraBones.filter((b) => !/^hair[A-Z]/.test(b.name));
+    const keptJoints = Object.fromEntries(Object.entries(joints.joints).filter(([k]) => !/^hair[A-Z]/.test(k)));
+    const { positions, index } = arrays(normalized.geometry);
+    const found = hairCount ? hairChains(positions, index, faces, { joints: keptJoints, tails: joints.tails }) : null;
+    if (!found?.bones.length) {
+      set({
+        hairNote: !hairCount
+          ? 'No hair found. If the hair is the same colour as the skin, mark it in the Parts step first.'
+          : 'The hair is short and stays on the head, so it needs no spring chains.',
+      });
+      return;
+    }
+    set({
+      extraBones: [...kept, ...found.bones],
+      joints: { joints: { ...keptJoints, ...found.joints }, tails: joints.tails },
+      hairFaces: faces,
+      hairNote: `Added ${new Set(found.bones.map((b) => b.name.replace(/\d+$/, ''))).size} hair chains (${found.bones.length} joints) to hair hanging ${Math.round(found.length * 100)} cm below the skull.`,
+    });
+    await get().buildRig();
+  },
+
+  async removeHairSprings() {
+    const joints = get().joints;
+    if (!joints) return;
+    set({
+      extraBones: get().extraBones.filter((b) => !/^hair[A-Z]/.test(b.name)),
+      joints: { joints: Object.fromEntries(Object.entries(joints.joints).filter(([k]) => !/^hair[A-Z]/.test(k))), tails: joints.tails },
+      hairFaces: null,
+      hairNote: null,
+    });
+    if (get().character?.built) await get().buildRig();
+  },
+
   setArmSpacing(degrees) {
     set({ armSpacing: degrees });
     const binding = get().binding;
@@ -785,17 +888,36 @@ export const useStore = create<State & Actions>()((set, get) => ({
     let finished = false;
     try {
       const t0 = performance.now();
-      const { positions, index, defs, rigJoints, kind, quad, creature } = rigInputs();
-      const w = await computeWeights(positions, index, rigJoints, kind, weightSettings, (stage, fraction) => {
+      const { positions, index, defs: bodyBones, rigJoints: bodyJoints, kind, quad, creature } = rigInputs();
+      // Hair chains move only the hair, and the hair follows only them and the head.
+      const hairFaces = get().hairFaces;
+      const hairBones = bodyBones.flatMap((d, i) => (/^hair[A-Z]/.test(d.name) ? [i] : []));
+      let exclusive: { vertices: Uint8Array; bones: number[]; shared: number[] } | undefined;
+      if (hairFaces && hairBones.length && hairFaces.length * 3 === index.length) {
+        const vertices = new Uint8Array(positions.length / 3);
+        hairFaces.forEach((h, t) => h && (vertices[index[t * 3]] = vertices[index[t * 3 + 1]] = vertices[index[t * 3 + 2]] = 1));
+        exclusive = { vertices, bones: hairBones, shared: [bodyBones.findIndex((d) => d.name === 'head')] };
+      }
+      const w = await computeWeights(positions, index, bodyJoints, kind, { ...weightSettings, exclusive }, (stage, fraction) => {
         // Progress messages cross the worker boundary asynchronously; drop any that arrive late.
         if (!finished && fraction < 1) set({ busy: `${stage}…`, progress: fraction });
       });
+      // Jaw and eyes are weighted from the face's landmarks, after the body.
+      const face = get().faceRig && get().rigType === 'humanoid' ? detectFace(positions, index, bodyJoints, get().detection?.measurements.centerX) : null;
+      const defs = face ? [...bodyBones, ...faceDefs()] : bodyBones;
+      const rigJoints = face ? mergeJoints(bodyJoints, faceJoints(face)) : bodyJoints;
+      const names = defs.map((d) => d.name);
+      if (face) applyFaceWeights(positions, index, w.skinIndex, w.skinWeight, names, face);
+      if (exclusive && hairFaces) cleanHairWeights(positions, index, hairFaces, w.skinIndex, w.skinWeight, names, rigJoints);
       const built = buildSkinnedCharacter(normalized.geometry, normalized.materials, defs, rigJoints, w.skinIndex, w.skinWeight, quad ? 'Animal' : creature ? 'Creature' : 'Character');
+      if (face) attachExpressions(built.mesh, face);
+      set({ face, expressionPreview: {} });
       // Humanoids retarget through a canonical binding; other skeletons use direct bone keys.
       const binding = quad || creature ? null : bindSkeleton(built.root, autoMapBones(built.root).map);
       if (binding) setArmSpacing(binding, get().armSpacing);
-      if (creature) set({ joints: rigJoints });
+      if (creature) set({ joints: bodyJoints });
       set({ springs: defaultSprings(get().rigType, get().extraBones, normalized.geometry, rigJoints.joints) });
+      if (get().parts) queueMicrotask(applyParts);
       const kernel = w.kernel;
       set({
         character: { root: built.root, built },
@@ -1449,6 +1571,10 @@ export function suggestController(): ControllerSetup {
   return setup;
 }
 
+function mergeJoints(a: JointMap, b: JointMap): JointMap {
+  return { joints: { ...a.joints, ...b.joints }, tails: { ...a.tails, ...b.tails } };
+}
+
 /** Spring chains for every accessory chain (and a quadruped's tail), with body colliders. */
 function defaultSprings(rigType: RigType, extra: CreatureBone[], geometry: BufferGeometry, joints: Record<string, [number, number, number]>): SpringConfig {
   const chains: SpringChainDef[] = [];
@@ -1478,6 +1604,21 @@ function defaultSprings(rigType: RigType, extra: CreatureBone[], geometry: Buffe
     }
     colliders.push({ bone: name, radius: Math.sqrt(best) * 0.95 });
   }
+  // Joints thin enough to start clear of every collider: hair lying on the back would
+  // otherwise be shoved off it on the first frame and flick about.
+  for (const c of chains) {
+    let room = 0.02;
+    for (const bone of c.bones) {
+      const p = joints[bone];
+      if (!p) continue;
+      for (const col of colliders) {
+        const q = joints[col.bone];
+        if (q) room = Math.min(room, Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) - col.radius - 0.003);
+      }
+    }
+    c.radius = Math.max(0.004, room);
+    if (/^hair[A-Z]/.test(c.name ?? '')) Object.assign(c, { stiffness: 1.4, damping: 0.5, gravity: 0.45 });
+  }
   return { chains, colliders };
 }
 
@@ -1503,7 +1644,7 @@ export function rigInputs() {
   const { positions, index } = arrays(normalized.geometry);
   const quad = rigType === 'quadruped';
   const creature = rigType === 'creature';
-  const defs = skeletonDefs();
+  const defs = bodyDefs();
   const hasExtras = extraBones.length > 0;
   const rigJoints = creature || hasExtras ? { joints: joints.joints, tails: autoTails(defs, joints.joints, joints.tails) } : joints;
   const kind: SkeletonKind = creature || hasExtras ? [...defs] : quad ? 'quadruped' : fingers ? 'humanoid' : 'humanoid-nofingers';
@@ -1527,6 +1668,10 @@ function replacePrepared(prepared: PreparedMesh) {
     propRig: null,
     extraBones: [],
     springs: { chains: [], colliders: [] },
+    face: null,
+    expressionPreview: {},
+    hairFaces: null,
+    hairNote: null,
     character: null,
     binding: null,
     clips: [],
@@ -1562,6 +1707,10 @@ function ingest(file: LoadedFile) {
     propRig: null,
     extraBones: [],
     springs: { chains: [], colliders: [] },
+    face: null,
+    expressionPreview: {},
+    hairFaces: null,
+    hairNote: null,
     character: null,
     binding: null,
     clips: [],

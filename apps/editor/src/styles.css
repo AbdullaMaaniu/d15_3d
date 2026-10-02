@@ -58,6 +58,7 @@ p { margin: 0; color: var(--muted); }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row.between { justify-content: space-between; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.expr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: #232833; cursor: pointer; transition: background 0.12s, border-color 0.12s; white-space: nowrap; }

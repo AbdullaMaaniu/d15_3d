@@ -2,7 +2,7 @@ import type { AnimationClip, Object3D } from 'three';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { Document, WebIO, type Texture } from '@gltf-transform/core';
 import { ALL_EXTENSIONS, EXTMeshoptCompression, EXTTextureWebP } from '@gltf-transform/extensions';
-import { dedup, inspect, prune, quantize, reorder, resample } from '@gltf-transform/functions';
+import { dedup, inspect, prune, quantize, reorder, resample, sparse } from '@gltf-transform/functions';
 import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 
 export type ExportPreset = 'web' | 'mobile' | 'lossless';
@@ -129,6 +129,8 @@ export async function optimizeDocument(
       method: EXTMeshoptCompression.EncoderMethod.FILTER,
     });
   }
+  // Expression morph targets only move the face: store them sparse.
+  await doc.transform(sparse({ ratio: 1 / 3 }));
   return warnings;
 }
 

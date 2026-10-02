@@ -118,6 +118,10 @@ function CameraTarget() {
   const camera = useThree((s) => s.camera);
   const aspect = useThree((s) => s.size.width / Math.max(1, s.size.height));
   useEffect(() => {
+    // Lets tests and screenshot scripts aim the camera.
+    if (import.meta.env.DEV && controls) (window as any).rigforgeView = { camera, controls };
+  }, [camera, controls]);
+  useEffect(() => {
     if (!controls) return;
     // Frame the whole model: tall characters by height, wide props by width.
     let width = height * 0.6, depth = height * 0.4, tall = height, midY = height * 0.5;

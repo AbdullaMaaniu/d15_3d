@@ -16,13 +16,21 @@ export async function buildGlb(onProgress?: (stage: string) => void): Promise<Ex
   const { character, clips, exportPreset, springs, set } = useStore.getState();
   if (!character) throw new Error('Build the rig first.');
   const wasPlaying = useStore.getState().playing;
+  let restore = () => {};
   try {
     set('playing', false);
     set('shading', 'textured');
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    // Bind pose, neutral face: expression previews aren't part of the file.
+    const influences: Array<[number[], number[]]> = [];
     character.root.traverse((o: any) => {
       if (o.isSkinnedMesh) o.skeleton.pose();
+      if (o.morphTargetInfluences) {
+        influences.push([o.morphTargetInfluences, [...o.morphTargetInfluences]]);
+        o.morphTargetInfluences.fill(0);
+      }
     });
+    restore = () => influences.forEach(([live, saved]) => saved.forEach((v, i) => (live[i] = v)));
     character.root.updateMatrixWorld(true);
     // Spring bones and controller roles ride along as node extras; @rigforge/three reads them on load.
     character.root.userData.rigforge = {
@@ -42,6 +50,7 @@ export async function buildGlb(onProgress?: (stage: string) => void): Promise<Ex
     set('exportResult', res);
     return res;
   } finally {
+    restore();
     set('playing', wasPlaying);
   }
 }

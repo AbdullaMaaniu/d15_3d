@@ -9,6 +9,7 @@ import {
   LoopRepeat,
   Matrix3,
   Matrix4,
+  type Mesh,
   Object3D,
   Quaternion,
   Vector3,
@@ -30,7 +31,7 @@ import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js
 
 /** VRM / RigForge canonical humanoid bone names. */
 export type HumanoidBone =
-  | 'hips' | 'spine' | 'chest' | 'upperChest' | 'neck' | 'head'
+  | 'hips' | 'spine' | 'chest' | 'upperChest' | 'neck' | 'head' | 'jaw' | 'leftEye' | 'rightEye'
   | `${'left' | 'right'}${'Shoulder' | 'UpperArm' | 'LowerArm' | 'Hand' | 'UpperLeg' | 'LowerLeg' | 'Foot' | 'Toes'}`
   | `${'left' | 'right'}${'Thumb'}${'Metacarpal' | 'Proximal' | 'Distal'}`
   | `${'left' | 'right'}${'Index' | 'Middle' | 'Ring' | 'Little'}${'Proximal' | 'Intermediate' | 'Distal'}`;
@@ -80,6 +81,8 @@ export interface LookAtOptions {
   maxAngle?: number;
   /** Share of the turn done by the neck (default 0.4). */
   neckShare?: number;
+  /** Max eye turn in radians, for rigs with eye bones (default ~25°). */
+  eyeAngle?: number;
 }
 
 type EventName = 'finished' | 'loop';
@@ -131,7 +134,10 @@ export class Character {
 
   private boneCache = new Map<string, Object3D | null>();
   private lookTarget: Vector3 | Object3D | null = null;
-  private lookOptions: Required<LookAtOptions> = { weight: 1, maxAngle: 1.2, neckShare: 0.4 };
+  private lookOptions: Required<LookAtOptions> = { weight: 1, maxAngle: 1.2, neckShare: 0.4, eyeAngle: 0.45 };
+  private blinkOn = false;
+  private blinkClock = 0;
+  private nextBlink = 2;
   private listeners: Record<EventName, Set<(e: { action: AnimationAction; name: string }) => void>> = {
     finished: new Set(),
     loop: new Set(),
@@ -166,7 +172,7 @@ export class Character {
     });
     if (springConfig?.chains?.length) this.springs = new SpringBones(object, springConfig, (n) => this.bone(n) ?? object.getObjectByName(n));
     // Capture rest orientations used by lookAt before any animation runs.
-    for (const name of ['head', 'neck']) {
+    for (const name of ['head', 'neck', 'leftEye', 'rightEye']) {
       const b = this.bone(name);
       if (b) this.restRelative(b);
     }
@@ -192,6 +198,49 @@ export class Character {
    */
   setColor(region: string, color: import('three').ColorRepresentation | null): boolean {
     return setRegionColor(this.object, region, color);
+  }
+
+  /** Expressions (morph targets) on the character's meshes, e.g. VRM presets 'happy', 'aa', 'blink'. */
+  get expressions(): string[] {
+    const names = new Set<string>();
+    this.object.traverse((o) => {
+      const dict = (o as Mesh).morphTargetDictionary;
+      if (dict) for (const n of Object.keys(dict)) names.add(n);
+    });
+    return [...names];
+  }
+
+  /**
+   * Sets an expression's weight, 0..1 (`character.setExpression('happy', 1)`).
+   * Expressions add up, so 'aa' can play over 'happy'. Returns false if there is no such expression.
+   */
+  setExpression(name: string, weight: number): boolean {
+    let found = false;
+    this.object.traverse((o) => {
+      const m = o as Mesh;
+      const i = m.morphTargetDictionary?.[name];
+      if (i === undefined || !m.morphTargetInfluences) return;
+      m.morphTargetInfluences[i] = weight;
+      found = true;
+    });
+    return found;
+  }
+
+  /** The current weight of an expression (0 if missing). */
+  getExpression(name: string): number {
+    let w = 0;
+    this.object.traverse((o) => {
+      const m = o as Mesh;
+      const i = m.morphTargetDictionary?.[name];
+      if (i !== undefined && m.morphTargetInfluences) w = Math.max(w, m.morphTargetInfluences[i]);
+    });
+    return w;
+  }
+
+  /** Blinks every few seconds on its own (needs a 'blink' expression). */
+  autoBlink(on = true): void {
+    this.blinkOn = on && this.expressions.includes('blink');
+    if (!this.blinkOn) this.setExpression('blink', 0);
   }
 
   /** Plays (crossfading into) the named clip. Returns the action, or null if missing. Stops any state machine. */
@@ -272,7 +321,21 @@ export class Character {
     if (this.layers.size) this.applyLayers(delta);
     this.footIK?.apply();
     if (this.lookTarget) this.applyLookAt();
+    if (this.blinkOn) this.applyBlink(delta);
     this.springs?.update(delta);
+  }
+
+  private applyBlink(delta: number): void {
+    this.blinkClock += delta;
+    // A blink: 70 ms closing, 100 ms opening.
+    const t = this.blinkClock - this.nextBlink;
+    if (t < 0) return;
+    const w = t < 0.07 ? t / 0.07 : t < 0.17 ? 1 - (t - 0.07) / 0.1 : 0;
+    this.setExpression('blink', w);
+    if (t >= 0.17) {
+      this.blinkClock = 0;
+      this.nextBlink = 2 + Math.random() * 4;
+    }
   }
 
   /** Replaces the spring bone setup (null removes it). */
@@ -515,8 +578,8 @@ export class Character {
     const neck = this.bone('neck');
     const target = this.lookTarget instanceof Object3D ? this.lookTarget.getWorldPosition(this._v2) : (this.lookTarget as Vector3);
     this.object.updateMatrixWorld(true);
-    const { weight, maxAngle, neckShare } = this.lookOptions;
-    const turn = (bone: Object3D, share: number) => {
+    const { weight, maxAngle, neckShare, eyeAngle } = this.lookOptions;
+    const turn = (bone: Object3D, share: number, limit = maxAngle) => {
       const origin = bone.getWorldPosition(this._v);
       const toTarget = target.clone().sub(origin).normalize();
       // The bone's current forward: character forward (+Z) carried by the bone's deviation from rest.
@@ -525,7 +588,7 @@ export class Character {
       const forward = new Vector3(0, 0, 1).applyQuaternion(deviation);
       const q = new Quaternion().setFromUnitVectors(forward, toTarget);
       const angle = 2 * Math.acos(Math.min(1, Math.abs(q.w)));
-      if (angle > maxAngle) q.slerp(new Quaternion(), 1 - maxAngle / angle);
+      if (angle > limit) q.slerp(new Quaternion(), 1 - limit / angle);
       const partial = new Quaternion().slerp(q, weight * share);
       const parentWorld = bone.parent!.getWorldQuaternion(this._q2);
       const world = boneWorld.clone().premultiply(partial);
@@ -534,6 +597,11 @@ export class Character {
     };
     if (neck) turn(neck, neckShare);
     turn(head, neck ? 1 - neckShare : 1);
+    // Eye bones (when the rig has them) look the rest of the way, within their own limit.
+    for (const name of ['leftEye', 'rightEye']) {
+      const eye = this.bone(name);
+      if (eye) turn(eye, 1, eyeAngle);
+    }
   }
 }
 

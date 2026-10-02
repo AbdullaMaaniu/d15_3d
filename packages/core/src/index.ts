@@ -32,6 +32,7 @@ export {
   regionBaseColors,
   applyRegions,
   readRegions,
+  hairTriangles,
   type RegionDef,
   type RegionSet,
   type RegionContext,
@@ -84,3 +85,8 @@ export {
   type MeshArrays,
   type Topology,
 } from './mesh/remesh';
+export {
+  FACE_BONES, EXPRESSIONS, faceDefs, faceJoints, detectFace, jawMask, applyFaceWeights, faceExpressions, attachExpressions,
+  type FaceLandmarks, type ExpressionName,
+} from './rig/face';
+export { hairChains, cleanHairWeights, type HairChains, type HairOptions } from './rig/hair';

@@ -16,6 +16,11 @@ export interface WeightOptions {
   maxInfluences?: number;
   /** Give each shoulder a clean seam between arm and body (default true). */
   splitShoulders?: boolean;
+  /**
+   * Bones that belong to part of the mesh only (hair chains on the hair): they
+   * influence just the marked vertices, which take only them and the `shared` bones.
+   */
+  exclusive?: { vertices: Uint8Array; bones: number[]; shared: number[] };
   onProgress?: (stage: string, fraction: number) => void;
 }
 
@@ -162,7 +167,31 @@ function prepareSkinWeights(
     const dense = new Float32Array(welded * B);
     let fallback = 0;
     const segCount = segments.length / 7;
+    const ex = options.exclusive;
+    const exBone = new Uint8Array(B), exShared = new Uint8Array(B);
+    if (ex) {
+      for (const b of ex.bones) exBone[b] = 1;
+      for (const b of ex.shared) exShared[b] = 1;
+    }
     for (let w = 0; w < welded; w++) {
+      if (ex) {
+        // Bones that can't reach this vertex are infinitely far; if none can, measure in a straight line.
+        const marked = ex.vertices[rep[w]] === 1;
+        let any = false;
+        for (let b = 0; b < B; b++) {
+          const ok = marked ? exBone[b] || exShared[b] : !exBone[b];
+          if (!ok) dist[w * B + b] = Infinity;
+          else if (Number.isFinite(dist[w * B + b])) any = true;
+        }
+        if (!any) {
+          for (let s = 0; s < segCount; s++) {
+            const b = segments[s * 7];
+            if (marked ? !(exBone[b] || exShared[b]) : exBone[b]) continue;
+            const d = pointSegmentDistance(pts, w, segments, s);
+            if (d < dist[w * B + b]) dist[w * B + b] = d;
+          }
+        }
+      }
       let any = false;
       for (let b = 0; b < B; b++) if (Number.isFinite(dist[w * B + b])) { any = true; break; }
       if (!any) {
