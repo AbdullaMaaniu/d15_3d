@@ -39,7 +39,7 @@ export function BodyPanel() {
       <div>
         <h2>Body</h2>
         <p>
-          A body generated inside the clothes from your rig: the base for clothing physics. Shape it so it sits just inside the clothes.
+          A normal human body built along your rig, the base for clothing physics. Its proportions are average adult ones, scaled to your skeleton's bone lengths; shape it so it sits just inside the clothes.
         </p>
       </div>
       <Section title="Shape">
