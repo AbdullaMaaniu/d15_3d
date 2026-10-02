@@ -166,9 +166,6 @@ const apply34 = (m: number[], p: V3): V3 => [
   m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11],
 ];
 
-/** Thickness multipliers per reference bone (around the bone), e.g. from `insideScale`. */
-export type BoneScale = Partial<Record<string, number>>;
-
 /** Where each shape control acts: bones, a span along the bone (0 = joint, 1 = end) and a side of it. */
 interface ControlArea {
   bones: string[];
@@ -211,13 +208,12 @@ function areaWeight(a: ControlArea, t: number, cf: number, cs: number): number {
 }
 
 /** Pushes the reference surface in or out around its bones for the shape controls (reference space). */
-function shapeReference(ref: ReferenceBody, shape: BodyShape, boneScale: BoneScale = {}): Float32Array {
+function shapeReference(ref: ReferenceBody, shape: BodyShape): Float32Array {
   const out = Float32Array.from(ref.positions);
   const overall = shape.overall ?? 1;
   const active = (Object.keys(CONTROL_AREAS) as BodyControl[]).filter((k) => Math.abs((shape[k] ?? 1) - 1) > 1e-6);
   const head = shape.head ?? 1;
-  const scaled = ref.bones.map((b) => boneScale[b] ?? 1);
-  if (!active.length && Math.abs(overall - 1) < 1e-6 && Math.abs(head - 1) < 1e-6 && scaled.every((m) => m === 1)) return out;
+  if (!active.length && Math.abs(overall - 1) < 1e-6 && Math.abs(head - 1) < 1e-6) return out;
   const frames = ref.bones.map((b) => {
     const a = ref.joints.joints[b] as V3 | undefined, e = boneEnd(ref.joints, b);
     return a && e ? { a, ...frame(a, e) } : null;
@@ -239,7 +235,7 @@ function shapeReference(ref: ReferenceBody, shape: BodyShape, boneScale: BoneSca
       const r = len(radial) || 1;
       const t = along / (fr.l || 1);
       const cf = dot(radial, fr.f) / r, cs = dot(radial, fr.s) / r;
-      let m = overall * scaled[b];
+      let m = overall;
       for (const { a, m: val } of perBone[b]) m *= 1 + (val - 1) * areaWeight(a, t, cf, cs);
       // The head grows as a whole, around its middle.
       if (b === headBone && Math.abs(head - 1) > 1e-6) {
@@ -258,16 +254,26 @@ function shapeReference(ref: ReferenceBody, shape: BodyShape, boneScale: BoneSca
 /**
  * Maps the torso by height along its joint chain: a point at some height of the
  * reference torso goes to the same fraction of the rig's matching segment, with
- * its offset from the chain turned with the torso and scaled to the build.
+ * its offset from the chain turned with the torso and scaled to the build:
+ * `size` front to back, and side to side by the rig's hip and shoulder
+ * spacing, within a human range of its size.
  */
-function torsoMap(R: JointMap, map: JointMap, thick: number): ((p: V3) => V3) | null {
+function torsoMap(R: JointMap, map: JointMap, size: number, slim: number): ((p: V3) => V3) | null {
   const chain = ['hips', 'spine', 'chest', 'upperChest', 'neck'].filter((b) => R.joints[b] && map.joints[b]);
   if (chain.length < 2 || chain[0] !== 'hips') return null;
   const rp = chain.map((b) => R.joints[b] as V3), tp = chain.map((b) => map.joints[b] as V3);
   const ru = norm(sub(rp[rp.length - 1], rp[0]));
   const rot = rotationBetween(ru, norm(sub(tp[tp.length - 1], tp[0])));
   const h = rp.map((p) => dot(sub(p, rp[0]), ru));
-  return (p) => {
+  const width = (a: string, b: string) =>
+    R.joints[a] && R.joints[b] && map.joints[a] && map.joints[b] ? len(sub(map.joints[a], map.joints[b])) / len(sub(R.joints[a], R.joints[b])) : size;
+  // One width for the whole torso: varying it with height would pinch the sides under the arms.
+  // Slimming never narrows it past where the arms attach, which would stretch the armpits into webs.
+  const shoulders = size * Math.min(1.3, Math.max(0.85, width('leftUpperArm', 'rightUpperArm') / size));
+  const lat = Math.max(slim * size * Math.min(1.15, Math.max(0.9, (width('leftUpperLeg', 'rightUpperLeg') + width('leftUpperArm', 'rightUpperArm')) / 2 / size)), 0.95 * shoulders);
+  // Nor flattens it much more front to back than side to side, which reads as a box with flaps.
+  const depth = Math.max(slim * size, 0.9 * lat);
+  const base = (p: V3): V3 => {
     const hp = dot(sub(p, rp[0]), ru);
     // Segment containing this height (the end segments extend past the ends).
     let i = 0;
@@ -275,20 +281,63 @@ function torsoMap(R: JointMap, map: JointMap, thick: number): ((p: V3) => V3) | 
     const f = (hp - h[i]) / (h[i + 1] - h[i] || 1);
     const rc = add(rp[i], scale(sub(rp[i + 1], rp[i]), f));
     const tc = add(tp[i], scale(sub(tp[i + 1], tp[i]), f));
-    return add(tc, scale(mul3(rot, sub(p, rc)), thick));
+    const o = sub(p, rc);
+    return add(tc, mul3(rot, [o[0] * lat, o[1] * size, o[2] * depth]));
   };
+  // Then a smooth local correction so the limbs' roots land on the rig's
+  // shoulder and hip joints, where the limbs are attached: otherwise the
+  // armpits and groin are torn between torso and limb and fold into webs.
+  const roots = ['leftUpperArm', 'rightUpperArm', 'leftUpperLeg', 'rightUpperLeg', ...chain].filter((b) => R.joints[b] && map.joints[b]);
+  const c = roots.map((b) => R.joints[b] as V3);
+  const sigma = 0.12 * size;
+  const k = (a: V3, b: V3) => Math.exp(-(len(sub(a, b)) ** 2) / (2 * sigma * sigma));
+  const resid = roots.map((b, i) => sub(map.joints[b] as V3, base(c[i])));
+  const n = c.length;
+  const K = c.map((a) => c.map((b) => k(a, b)));
+  const w = [0, 1, 2].map((axis) => solveDense(K, resid.map((r) => r[axis])));
+  return (p) => {
+    const q = base(p);
+    for (let i = 0; i < n; i++) {
+      const f = k(p, c[i]);
+      if (f < 1e-6) continue;
+      q[0] += w[0][i] * f;
+      q[1] += w[1][i] * f;
+      q[2] += w[2][i] * f;
+    }
+    return q;
+  };
+}
+
+/** Solves A x = b (small, dense) by Gaussian elimination with partial pivoting. */
+function solveDense(A: number[][], b: number[]): number[] {
+  const n = b.length;
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    const d = M[c][c] || 1e-12;
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / d;
+      for (let j = c; j <= n; j++) M[r][j] -= f * M[c][j];
+    }
+  }
+  return M.map((row, i) => row[n] / (row[i] || 1e-12));
 }
 
 /**
  * Fits the reference body to a humanoid rig. Bones the rig doesn't have hand
  * their vertices to the nearest parent it does have.
  */
-export function fitReferenceBody(ref: ReferenceBody, map: JointMap, shape: BodyShape = {}, boneScale: BoneScale = {}): BodyMesh {
+export function fitReferenceBody(ref: ReferenceBody, map: JointMap, shape: BodyShape = {}, slim = 1): BodyMesh {
   const R = ref.joints, J = map.joints;
-  const span = (m: JointMap, a: string, b: string) => (m.joints[a] && m.joints[b] ? len(sub(m.joints[a], m.joints[b])) : NaN);
-  // Thickness follows the character's build: shoulder span and torso length against the reference's.
-  const ratios = [span(map, 'leftUpperArm', 'rightUpperArm') / span(R, 'leftUpperArm', 'rightUpperArm'), span(map, 'hips', 'neck') / span(R, 'hips', 'neck')].filter(Number.isFinite);
-  const thick = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 1;
+  // Overall size: the rig's standing height (head joint over the feet) against the reference's.
+  const stand = (m: JointMap) => {
+    const feet = ['leftFoot', 'rightFoot'].map((f) => m.joints[f]).filter(Boolean);
+    return m.joints.head && feet.length ? m.joints.head[1] - feet.reduce((s, f) => s + f[1], 0) / feet.length : NaN;
+  };
+  const size = stand(map) / stand(R) || 1;
 
   // Bones present in both, else their nearest present ancestor.
   const has = (b: string) => !!J[b] && !!R.joints[b];
@@ -300,8 +349,9 @@ export function fitReferenceBody(ref: ReferenceBody, map: JointMap, shape: BodyS
   // The torso is mapped as one piece along its joints (hips to neck), so it
   // stays continuous however the spacing and small zigzags of its joints
   // differ between the reference and the rig.
-  const TORSO = ['hips', 'spine', 'chest', 'upperChest'];
-  const torso = torsoMap(R, map, thick);
+  // The collarbones go with it, so the arms attach where the torso is widened to.
+  const TORSO = ['hips', 'spine', 'chest', 'upperChest', 'leftShoulder', 'rightShoulder'];
+  const torso = torsoMap(R, map, size, slim);
   const xf = new Map<string, (p: V3) => V3>();
   for (const b of new Set(owner)) {
     if (torso && TORSO.includes(b)) {
@@ -316,14 +366,35 @@ export function fitReferenceBody(ref: ReferenceBody, map: JointMap, shape: BodyS
       m = boneMatrix(ra, ta, [1, 0, 0, 0, 1, 0, 0, 0, 1], [0, 1, 0], 1, 1);
     } else {
       const rd = sub(re, ra), td = sub(te, ta), ru = norm(rd);
-      // Heads, hands and feet keep their own proportions; limbs take the build.
-      const along = len(td) / (len(rd) || 1);
-      m = boneMatrix(ra, ta, rotationBetween(ru, norm(td)), ru, along, /head|Hand|Foot|Toes/.test(b) ? along : thick);
+      // Limbs stretch to the rig's bone lengths at the body's size; the head and
+      // hands keep human proportions (a stylised big head doesn't make a big skull).
+      const along = /head|Hand/.test(b) ? size : len(td) / (len(rd) || 1);
+      const across = /head|Hand|Foot|Toes/.test(b) ? size : size * slim;
+      const tu = norm(td);
+      m = boneMatrix(ra, ta, rotationBetween(ru, tu), ru, along, across);
+      if (torso && /^(neck|leftUpperArm|rightUpperArm|leftUpperLeg|rightUpperLeg)$/.test(b)) {
+        // Limbs and neck grow out of the torso: up to their joint they move as
+        // the torso does, and take their own fit a little way along. Otherwise
+        // the armpits, groin and collar, which blend torso and limb, are torn
+        // between the two and fold into flaps.
+        const l = len(rd) || 1, limb = m;
+        // Arms leave the torso sideways, whatever angle they hang at.
+        const hips = R.joints.hips as V3;
+        const out: V3 | null = /Arm/.test(b) ? norm([ra[0] - hips[0], 0, 0]) : null;
+        xf.set(b, (p) => {
+          const f = smooth(-0.1, 0.5, dot(sub(p, ra), out ?? ru) / l);
+          const q = apply34(limb, p);
+          if (f >= 1) return q;
+          const t = torso(p);
+          return add(t, scale(sub(q, t), f));
+        });
+        continue;
+      }
     }
     xf.set(b, (p) => apply34(m, p));
   }
 
-  const src = shapeReference(ref, shape, boneScale);
+  const src = shapeReference(ref, shape);
   const V = src.length / 3;
   const positions = new Float32Array(V * 3);
   for (let v = 0; v < V; v++) {
@@ -380,28 +451,18 @@ function vertexNormals(p: Float32Array, index: Uint32Array): Float32Array {
 }
 
 /**
- * How much to slim each part of the fitted body so it sits inside the
- * character's own surface (its clothes): for each bone, the share of its
- * surface that pokes out is pulled in toward the bone until most of it is
- * inside. Only ever slims; roomy clothes don't fatten the body.
+ * How much to slim the fitted body (one factor for all of it, so it keeps
+ * human proportions) so it sits inside the character's own surface, its
+ * clothes: each part's surface is pulled in toward its bone until 95% of it is
+ * inside, and the middle of the parts' needs is taken, within a natural range
+ * (a stylised stick figure gets a slim human, not a stick human). Only ever
+ * slims; roomy clothes don't fatten the body.
  *
  * `solid` is the character voxelized in rig space (see `Kernels.voxelize`).
  */
-export function insideScale(ref: ReferenceBody, map: JointMap, solid: VoxelGrid, options: { inside?: number; min?: number } = {}): BoneScale {
-  // Neighbouring bones share their blend zones, so later passes catch what the first left out.
-  let scaleBy: BoneScale = {};
-  for (let pass = 0; pass < 4; pass++) {
-    const more = insidePass(ref, map, solid, scaleBy, options);
-    const next: BoneScale = { ...scaleBy };
-    for (const [b, m] of Object.entries(more)) next[b] = Math.max(options.min ?? 0.45, (next[b] ?? 1) * m!);
-    scaleBy = next;
-  }
-  return scaleBy;
-}
-
-function insidePass(ref: ReferenceBody, map: JointMap, solid: VoxelGrid, current: BoneScale, options: { inside?: number; min?: number }): BoneScale {
-  const inside = options.inside ?? 0.95, min = options.min ?? 0.45;
-  const body = fitReferenceBody(ref, map, {}, current);
+export function insideSlim(ref: ReferenceBody, map: JointMap, solid: VoxelGrid, options: { inside?: number; min?: number } = {}): number {
+  const inside = options.inside ?? 0.95, floor = options.min ?? 0.85, min = 0.45;
+  const body = fitReferenceBody(ref, map);
   const isIn = (p: V3) => {
     const x = Math.floor((p[0] - solid.origin[0]) / solid.dx), y = Math.floor((p[1] - solid.origin[1]) / solid.dx), z = Math.floor((p[2] - solid.origin[2]) / solid.dx);
     return x >= 0 && y >= 0 && z >= 0 && x < solid.nx && y < solid.ny && z < solid.nz && solid.data[x + solid.nx * (y + solid.ny * z)] !== 0;
@@ -443,11 +504,7 @@ function insidePass(ref: ReferenceBody, map: JointMap, solid: VoxelGrid, current
     if (!ratios.has(best)) ratios.set(best, []);
     ratios.get(best)!.push(r);
   }
-  const out: BoneScale = {};
-  for (const [b, rs] of ratios) {
-    rs.sort((x, y) => x - y);
-    const q = rs[Math.floor((1 - inside) * (rs.length - 1))];
-    if (q < 1) out[ref.bones[b]] = Math.max(min, q);
-  }
-  return out;
+  const needs = [...ratios.values()].map((rs) => rs.sort((x, y) => x - y)[Math.floor((1 - inside) * (rs.length - 1))]).sort((x, y) => x - y);
+  const f = needs.length ? needs[Math.floor(needs.length / 2)] : 1;
+  return Math.max(floor, Math.min(1, f));
 }

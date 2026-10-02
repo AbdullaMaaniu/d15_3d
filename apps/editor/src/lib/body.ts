@@ -1,5 +1,5 @@
 import { BufferGeometry, Float32BufferAttribute, Matrix4, MeshStandardMaterial, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute } from 'three';
-import { decodeReferenceBody, fitReferenceBody, generateBody, insideScale, tsKernels, type BodyShape, type BoneScale, type JointMap, type ReferenceBody } from '@rigforge/core';
+import { decodeReferenceBody, fitReferenceBody, generateBody, insideSlim, tsKernels, type BodyShape, type JointMap, type ReferenceBody } from '@rigforge/core';
 import type { RiggedCharacter } from '@rigforge/core';
 import referenceUrl from '@rigforge/core/assets/reference-body.bin?url';
 
@@ -17,20 +17,20 @@ export function loadReferenceBody(): Promise<ReferenceBody | null> {
   return reference;
 }
 
-const slimming = new WeakMap<RiggedCharacter, { joints: JointMap; scale: BoneScale }>();
+const slimming = new WeakMap<RiggedCharacter, { joints: JointMap; slim: number }>();
 
 /** How much the reference body is slimmed to sit inside this character's clothes (measured once per rig). */
-function insideCharacter(built: RiggedCharacter, joints: JointMap, ref: ReferenceBody): BoneScale {
+function insideCharacter(built: RiggedCharacter, joints: JointMap, ref: ReferenceBody): number {
   const cached = slimming.get(built);
-  if (cached?.joints === joints) return cached.scale;
+  if (cached?.joints === joints) return cached.slim;
   const g = built.mesh.geometry;
   const positions = g.getAttribute('position').array as Float32Array;
   g.computeBoundingBox();
   const height = g.boundingBox!.max.y - g.boundingBox!.min.y;
   const grid = tsKernels.voxelize({ positions, index: g.index ? Uint32Array.from(g.index.array) : null, dx: height / 200 });
-  const scale = insideScale(ref, joints, grid);
-  slimming.set(built, { joints, scale });
-  return scale;
+  const slim = insideSlim(ref, joints, grid);
+  slimming.set(built, { joints, slim });
+  return slim;
 }
 
 /**
