@@ -30,6 +30,7 @@
     "three": ">=0.160.0"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "@gltf-transform/core": "^4.5.0",
     "@gltf-transform/extensions": "^4.5.0",
     "@gltf-transform/functions": "^4.5.0",

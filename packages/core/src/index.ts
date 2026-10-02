@@ -84,3 +84,11 @@ export {
   type MeshArrays,
   type Topology,
 } from './mesh/remesh';
+export { POSE_CONTROLS, POSE_CONTROL_NAMES, NEUTRAL_POSE, poseRotations, poseKeysClip, type Pose, type PoseControl, type PoseKey } from './motion/pose';
+export { GESTURES, findGesture, type Gesture } from './motion/gestures';
+export { sanitizeMotionPlan, motionPlanSchema, BODY_PARTS, type MotionPlan, type MotionStep, type MotionSource, type BodyPart } from './motion/plan';
+export { createMotionLibrary, compileMotionPlan, activeSide, type MotionLibrary, type LibraryClip, type CompileOptions } from './motion/compile';
+export {
+  generateMotion, describeLibrary, planFromText, builtinMotionProvider, claudeMotionProvider, createMockMotionProvider, motionSystemPrompt,
+  MotionProviderError, DEFAULT_CLAUDE_MODEL, type MotionProvider, type MotionRequest, type CatalogEntry, type GeneratedMotion, type ClaudeProviderOptions,
+} from './motion/providers';

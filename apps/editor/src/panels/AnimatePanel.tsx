@@ -3,6 +3,7 @@ import { humanoidDefs, keyCount, quadrupedGaits, type PropMotion } from '@rigfor
 import { useMemo, useState } from 'react';
 import { Check, FilePicker, Section, Seg } from '../components/ui';
 import { ArmSpacing } from '../components/ArmSpacing';
+import { TextToMotion } from '../components/TextToMotion';
 
 const CATEGORY_ORDER = ['idle', 'locomotion', 'action', 'combat', 'emote'];
 const ESSENTIALS = ['idle', 'walk', 'run', 'jump'];
@@ -212,7 +213,7 @@ export function AnimatePanel() {
             ? 'Spin, swing, slide, bob or wave any part, or keyframe your own motion.'
             : isQuad
               ? 'Add procedural gaits sized to your animal, or keyframe your own.'
-              : 'Add motion-captured presets or retarget your own Mixamo FBX, BVH or GLB clips.'}
+              : 'Add motion-captured presets, generate a clip from a text prompt, or retarget your own Mixamo FBX, BVH or GLB clips.'}
         </p>
       </div>
 
@@ -265,6 +266,7 @@ export function AnimatePanel() {
         {!direct && <p className="footer-note">Import Mixamo FBX, BVH or GLB animations; they're retargeted automatically.</p>}
       </Section>
 
+      {!direct && <TextToMotion />}
       {!direct && <BodyFitSection />}
       {isQuad && <GaitSection />}
       {direct && <PropMotionSection />}

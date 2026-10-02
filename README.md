@@ -7,7 +7,7 @@ Drop in a GLB/FBX/OBJ from Meshy (or any humanoid mesh), or import straight from
 1. **Clean & orient** it: merges parts, fixes degenerate triangles, stands it upright facing +Z at real-world scale.
    **Remesh** it to 3k, 10k, 30k, 60k, 100k or 150k faces, as **clean quads** (edge loops that follow the shape, new UVs, textures baked across) or **triangles** (evenly sized, original UVs and textures kept). Quad meshes download as OBJ with the quads intact.
 2. **Auto-rig** it: detects joints (T- or A-pose), including **15 finger bones per hand**, fits a VRM-compatible humanoid skeleton and computes skin weights with **geodesic voxel binding**, which is robust to the open, self-intersecting meshes AI generators produce.
-3. **Animate** it: add 18 motion-capture presets (idle, walk, run, jump, wave, punch, kick, dance…) or retarget your own **Mixamo FBX, BVH or GLB** clips. Clips can loop, play in place, change speed or be mirrored.
+3. **Animate** it: add 18 motion-capture presets (idle, walk, run, jump, wave, punch, kick, dance…), retarget your own **Mixamo FBX, BVH or GLB** clips, or **generate a clip from a text prompt** ("walk for 3 seconds, then wave with the left hand"). Clips can loop, play in place, change speed or be mirrored.
 4. **Refine** it: paint skin weights with a brush (add/subtract/smooth, mirrored), trim clips, and keyframe bones with a rotate gizmo, either to fix a retargeted clip or to pose a new one from scratch.
 5. **Export** it: one optimized GLB (meshopt geometry/animation compression, WebP textures, keyframe reduction) plus copy-paste code for three.js or React Three Fiber. The file carries a **game controller setup** (which clip is idle/walk/run/jump/an action, with speeds measured from the clips) and any **spring bones** (hair, tails, capes).
 6. **Test drive** it: play the exported file right in the editor with WASD, Shift to run, Space to jump and number keys for actions, on hilly ground with foot IK, using the same `@rigforge/three` runtime your game will.
@@ -146,7 +146,16 @@ The compiled WASM module is committed, so JavaScript-only contributors don't nee
 
 - **Done:** humanoid pipeline with finger bones, presets, retargeting, optimized export, three.js/R3F runtime; weight painting, keyframe editor, clip trimming, prop rigs, project files and autosave; state machines, layers, root motion and foot IK in the runtime.
 - **Also done:** quadruped template with gaits, custom creature skeletons, CLI batch mode, Meshy API import, spring bones, exported controller setups and an in-editor test drive.
-- **Later:** a pluggable AI text-to-motion provider.
+- **Also done:** pluggable text-to-motion: a built-in offline provider, a Claude provider for free-form prompts, and a `MotionProvider` interface for others.
+
+## Text to motion
+
+Type a prompt in the Animate step and RigForge turns it into a clip that retargets onto your rig. A provider turns the prompt into a *motion plan*: steps that play motion-capture presets or built-in gestures (clap, salute, think, kneel…), blended one after another, with optional overlays such as waving while walking. When nothing in the library fits, a plan can pose new gestures from plain joint angles (`leftArmLift`, `rightElbow`, `spineBend`…), which RigForge converts to rotations and keeps the feet on the floor.
+
+- **Built-in** works offline with a fixed vocabulary: walk, run, sneak, jump, wave, clap, bow, kneel, nod and friends, joined with "then" and "while", plus "slowly", "twice", "for 4 seconds" and "left hand".
+- **Claude** reads any description. Paste your own Claude API key in the editor; it stays in your browser and is sent only to the Claude API.
+- **Your own**: implement `MotionProvider` from `@rigforge/core` and call `generateMotion(prompt, provider, createMotionLibrary(presets))`.
+
 
 ## Credits & licenses
 

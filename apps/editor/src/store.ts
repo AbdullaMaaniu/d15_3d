@@ -50,6 +50,11 @@ import {
   buildSkinnedCharacter,
   computeNormalization,
   decodeClip,
+  createMotionLibrary,
+  generateMotion as generateMotionClip,
+  type MotionLibrary,
+  type MotionPlan,
+  type MotionProvider,
   extractNormalizedClip,
   guessOrientation,
   humanoidDefs,
@@ -164,6 +169,12 @@ export interface PaintSettings {
 }
 
 export const PRESETS: EncodedClip[] = (presetPack as { clips: EncodedClip[] }).clips;
+
+let motionLibrary: MotionLibrary | null = null;
+/** Presets plus built-in gestures, for text-to-motion. */
+export function getMotionLibrary(): MotionLibrary {
+  return (motionLibrary ??= createMotionLibrary(PRESETS));
+}
 
 /** A rigged character, either built by RigForge or reused from the imported file. */
 export interface CharacterState {
@@ -299,6 +310,8 @@ interface Actions {
   editJoints(): void;
   setTestClip(presetId: string | null): void;
   addPreset(id: string): void;
+  /** Turns a text prompt into a clip with a text-to-motion provider; resolves to the plan used. */
+  generateMotion(prompt: string, provider: MotionProvider): Promise<MotionPlan>;
   addImportedClips(files: File[]): Promise<void>;
   updateClip(id: string, patch: Partial<Pick<ClipEntry, 'name' | 'loop' | 'inPlace' | 'speed' | 'trim'>>): void;
   removeClip(id: string): void;
@@ -869,6 +882,21 @@ export const useStore = create<State & Actions>()((set, get) => ({
     const entry = { id: `c${++clipCounter}`, name, source: preset.source ?? 'Preset', normalized, loop: preset.loop, inPlace: true, speed: 1 };
     const full = { ...entry, baked: bake(binding, entry) };
     set({ clips: [...get().clips, full], activeClip: full.id, playing: true, testClip: null });
+  },
+
+  async generateMotion(prompt, provider) {
+    if (!get().binding) throw new Error('Build a humanoid rig first.');
+    const { plan, clip } = await generateMotionClip(prompt, provider, getMotionLibrary());
+    const binding = get().binding;
+    if (!binding) throw new Error('The rig changed while generating.');
+    let name = plan.name;
+    const names = new Set(get().clips.map((c) => c.name));
+    for (let i = 2; names.has(name); i++) name = `${plan.name} ${i}`;
+    // Loops play in place; one-off sequences keep their travel, so feet stay planted when a walk ends in a bow.
+    const entry = { id: `c${++clipCounter}`, name, source: `Text · “${prompt.trim().slice(0, 60)}”`, normalized: { ...clip, name }, loop: plan.loop, inPlace: plan.loop, speed: 1 };
+    const full = { ...entry, baked: bake(binding, entry) };
+    set({ clips: [...get().clips, full], activeClip: full.id, playing: true, testClip: null, time: 0, seek: 0 });
+    return plan;
   },
 
   async addImportedClips(files) {
