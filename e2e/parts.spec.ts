@@ -79,14 +79,14 @@ test('parts: paint, fill, undo, rename, preview colours, export and reopen', asy
   await page.getByRole('button', { name: '❚❚ Pause' }).click();
   expect(await store(page, 's.playing')).toBe(false);
 
-  // Export: one named material per part, tagged for the runtime.
+  // Export: one named material per part, tagged for the runtime, plus the body's skin.
   await page.getByRole('button', { name: 'Add animations →' }).click();
   await page.getByRole('button', { name: /Idle, Walk, Run, Jump/ }).click();
   await page.getByRole('button', { name: /^Export →/ }).click();
   await page.getByRole('button', { name: 'Build GLB' }).click();
   await expect(page.getByRole('button', { name: /Download .*\.glb/ })).toBeVisible({ timeout: 60000 });
   const glb = await page.evaluate(() => Array.from((window as any).rigforge.getState().exportResult.glb as Uint8Array));
-  expect(glbMaterials(glb)).toEqual([['Body', 'Body'], ['Shirt', 'Shirt']]);
+  expect(glbMaterials(glb)).toEqual([['Body', 'Body'], ['Shirt', 'Shirt'], ['Skin', undefined]]);
 
   // Save and reopen: the parts come back on the mesh.
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Save' }).click()]);

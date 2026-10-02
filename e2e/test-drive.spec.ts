@@ -27,15 +27,15 @@ test('test drive: walk, run and jump the exported character on bumpy ground', as
   expect(await drive(page, 'd.character.controllerSetup.locomotion.map((l) => l[1])')).toEqual(['Idle', 'Walk', 'Run']);
 
   // Walk forward: the character moves along +Z (it faces +Z and the camera starts behind it).
-  // Polled rather than timed: on a slow runner the first frames come late.
+  // Polled rather than timed: a software renderer under load can run at a few frames a second.
   await page.keyboard.down('KeyW');
-  await expect.poll(() => drive(page, 'd.speed'), { timeout: 10_000 }).toBeGreaterThan(0.8);
-  await expect.poll(async () => ((await drive(page, 'd.position')) as number[])[2], { timeout: 10_000 }).toBeGreaterThan(0.2);
+  await expect.poll(async () => ((await drive(page, 'd.position')) as number[])[2], { timeout: 30_000 }).toBeGreaterThan(0.2);
+  await expect.poll(() => drive(page, 'd.speed'), { timeout: 30_000 }).toBeGreaterThan(0.8);
   const walking = (await drive(page, 'd.speed')) as number;
 
   // Shift runs faster.
   await page.keyboard.down('Shift');
-  await expect.poll(() => drive(page, 'd.speed'), { timeout: 10_000 }).toBeGreaterThan(walking + 0.8);
+  await expect.poll(() => drive(page, 'd.speed'), { timeout: 30_000 }).toBeGreaterThan(walking + 0.8);
   if (shots) await page.screenshot({ path: `${shots}/drive-run.png` });
   await page.keyboard.up('Shift');
   await page.keyboard.up('KeyW');

@@ -16,6 +16,29 @@ function makeRig() {
 }
 
 describe('Character', () => {
+  it('keeps a follower skeleton (the exported body) in the character\'s pose', () => {
+    const root = new Group();
+    const hips = new Bone(); hips.name = 'hips'; hips.position.y = 1;
+    const hand = new Bone(); hand.name = 'leftHand'; hand.position.x = 0.6;
+    root.add(hips); hips.add(hand);
+    const body = new Group(); body.userData.rigforge = { follower: { stride: 0.9 } };
+    const bHips = new Bone(); bHips.name = 'Body_hips'; bHips.position.y = 0.9; bHips.userData.rigforge = { follows: 'hips' };
+    const bHand = new Bone(); bHand.name = 'Body_leftHand'; bHand.position.x = 0.5; bHand.userData.rigforge = { follows: 'leftHand' };
+    body.add(bHips); bHips.add(bHand); root.add(body);
+    const q = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), 0.5);
+    const clip = new AnimationClip('Turn', 1, [new QuaternionKeyframeTrack('leftHand.quaternion', [0, 1], [...q.toArray(), ...q.toArray()])]);
+    const c = new Character(root, [clip]);
+    expect(c.bone('hips')).toBe(hips);
+    c.play('Turn');
+    hips.position.set(0.2, 1.1, 0);
+    c.update(0.1);
+    expect(bHand.quaternion.angleTo(q)).toBeLessThan(1e-6);
+    // Moves from rest are scaled to the body's size.
+    expect(bHips.position.x).toBeCloseTo(0.18);
+    expect(bHips.position.y).toBeCloseTo(0.99);
+    expect(bHand.position.x).toBeCloseTo(0.5);
+  });
+
   it('finds bones by canonical name and aliases', () => {
     const c = makeRig();
     expect(c.bone('hips')?.name).toBe('mixamorig:Hips');

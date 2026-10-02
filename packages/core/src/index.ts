@@ -68,7 +68,7 @@ export { armClearance, measureArmClearance, type ArmClearance } from './anim/arm
 export { sliceClip, alignHeading, findLoop, makeSeamlessLoop, resampleClip, mirrorClip, symmetrizeArms, poseDistance, clipDuration } from './anim/clipTools';
 export { encodeClip, decodeClip, type EncodedClip, type PresetPack } from './anim/codec';
 
-export { exportCharacter, optimizeDocument, EXPORT_PRESETS, toGLB, createIO, sizeBreakdown, type ExportOptions, type ExportPreset, type ExportResult, type SizeBreakdown } from './export/export';
+export { exportCharacter, optimizeDocument, EXPORT_PRESETS, toGLB, createIO, sizeBreakdown, type ExportOptions, type ExportPreset, type ExportResult, type Follower, type SizeBreakdown } from './export/export';
 export { generateSnippet, type SnippetInput, type SnippetKind } from './export/snippets';
 export { createPaintContext, applyBrush, snapshotWeights, restoreWeights, type BrushMode, type BrushStroke, type PaintContext } from './rig/paint';
 export {

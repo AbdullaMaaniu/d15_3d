@@ -3,10 +3,8 @@ import { useFrame } from '@react-three/fiber';
 import { Uint32BufferAttribute, type Material, type SkinnedMesh } from 'three';
 import { coveredBodyTriangles, type GarmentSeparation, type HeadCut, type RiggedCharacter } from '@rigforge/core';
 import { garmentRegions, useStore } from '../store';
-import { buildBodyMesh, dressBody, dressMesh, loadReferenceBody, restOnBody, syncBodyPose, type BodyRig } from '../lib/body';
+import { bodySkinColor, buildBodyMesh, dressBody, dressMesh, loadReferenceBody, restOnBody, syncBodyPose, type BodyRig } from '../lib/body';
 import { buildGarmentMeshes, separateCharacter } from '../lib/garments';
-
-const DEFAULT_SKIN = '#d9a07a';
 
 /**
  * The body, following the character's pose, regenerated shortly after the
@@ -72,7 +70,7 @@ export function BodyView() {
     const t = setTimeout(async () => {
       const ref = await loadReferenceBody();
       if (cancelled) return;
-      const skin = garmentRegions()?.skinColor ?? DEFAULT_SKIN;
+      const skin = bodySkinColor();
       try {
         const t0 = performance.now();
         const next = buildBodyMesh(built, joints, shape, skin, ref);

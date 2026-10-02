@@ -99,7 +99,7 @@ export function BodyPanel() {
         {info && (
           <p className="footer-note">
             Body: {info.triangles.toLocaleString()} triangles, generated in {Math.round(info.ms)} ms
-            {garmentInfo && garments.hideCovered ? `, ${garmentInfo.hiddenBody.toLocaleString()} hidden under the clothes` : ''}. Not exported yet.
+            {garmentInfo && garments.hideCovered ? `, ${garmentInfo.hiddenBody.toLocaleString()} hidden under the clothes` : ''}. Exported with the character.
           </p>
         )}
       </Section>

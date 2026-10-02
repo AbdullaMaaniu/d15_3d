@@ -3,7 +3,7 @@ import { generateSnippet, type SnippetKind } from '@rigforge/core';
 import { useStore } from '../store';
 import { buildGlb, exportController } from '../lib/build';
 import { ControllerSection } from './ControllerSection';
-import { Section, Seg, formatBytes } from '../components/ui';
+import { Check, Section, Seg, formatBytes } from '../components/ui';
 
 export function ExportPanel() {
   const character = useStore((s) => s.character);
@@ -11,6 +11,9 @@ export function ExportPanel() {
   const name = useStore((s) => s.exportName);
   const preset = useStore((s) => s.exportPreset);
   const result = useStore((s) => s.exportResult);
+  const hasBody = useStore((s) => !!s.character?.built && s.rigType === 'humanoid');
+  const exportBody = useStore((s) => s.exportBody);
+  const separate = useStore((s) => s.garments.separate);
   const set = useStore((s) => s.set);
   const [busy, setBusy] = useState<string | null>(null);
   const [tab, setTab] = useState<SnippetKind>('three');
@@ -65,7 +68,7 @@ export function ExportPanel() {
     <>
       <div>
         <h2>Export</h2>
-        <p>One GLB with the skinned mesh, skeleton and {clips.length} named clip{clips.length === 1 ? '' : 's'}.</p>
+        <p>One GLB with the {hasBody && exportBody ? (separate ? 'clothes as separate meshes, the body under them' : 'skinned mesh, the body under the clothes') : 'skinned mesh'}, skeleton and {clips.length} named clip{clips.length === 1 ? '' : 's'}.</p>
       </div>
       <Section title="File">
         <div className="row">
@@ -81,6 +84,11 @@ export function ExportPanel() {
             ['lossless', 'Lossless'],
           ]}
         />
+        {hasBody && (
+          <Check checked={exportBody} onChange={(v) => set('exportBody', v)}>
+            Body under the clothes
+          </Check>
+        )}
         <p className="footer-note">
           {preset === 'web' && 'Meshopt compression, WebP textures up to 2K, keyframe reduction.'}
           {preset === 'mobile' && 'Meshopt compression, WebP textures up to 1K, keyframe reduction.'}

@@ -46,6 +46,7 @@ interface ProjectFile {
   clips: Array<{ name: string; source: string; loop: boolean; inPlace: boolean; speed: number; trim?: [number, number]; keys?: KeyLayer; propKeys?: PropKeys; seconds?: number; clip?: EncodedClip }>;
   exportName: string;
   exportPreset: StoreState['exportPreset'];
+  exportBody?: boolean;
   step: StoreState['step'];
   rigType?: RigType;
   propRig?: PropRig | null;
@@ -145,6 +146,7 @@ export async function saveProject(s: StoreState): Promise<Blob> {
     })),
     exportName: s.exportName,
     exportPreset: s.exportPreset,
+    exportBody: s.exportBody,
     step: s.step,
   };
   return gzip(JSON.stringify(file));
@@ -187,6 +189,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     activeClip: null,
     exportName: file.exportName,
     exportPreset: file.exportPreset,
+    exportBody: file.exportBody ?? true,
     exportResult: null,
     unlocked: 2,
     step: 'rig',

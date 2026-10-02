@@ -2,6 +2,25 @@ import { Bone, BufferGeometry, Float32BufferAttribute, Group, Matrix4, Vector3, 
 import { boneEnd, clothesGirth, decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, tsKernels, PROPORTION_CONTROLS, type BodyShape, type Girth, type JointMap, type ReferenceBody } from '@rigforge/core';
 import type { RiggedCharacter } from '@rigforge/core';
 import referenceUrl from '@rigforge/core/assets/reference-body.bin?url';
+import { garmentRegions, useStore } from '../store';
+
+const DEFAULT_SKIN = '#d9a07a';
+
+/** Skin colour from the character's Skin part (from the Parts step, or found automatically). */
+export function bodySkinColor(): string {
+  return garmentRegions()?.skinColor ?? DEFAULT_SKIN;
+}
+
+/**
+ * The body for export, as it looks in the Body step; null when it's left out
+ * or the character has none (not humanoid, or a rig reused from the imported file).
+ */
+export async function exportBodyRig(): Promise<BodyRig | null> {
+  const { character, joints, rigType, bodyShape, exportBody } = useStore.getState();
+  const built = character?.built;
+  if (!exportBody || !built || !joints || rigType !== 'humanoid') return null;
+  return buildBodyMesh(built, joints, bodyShape, bodySkinColor(), await loadReferenceBody());
+}
 
 let reference: Promise<ReferenceBody | null> | null = null;
 
@@ -160,7 +179,7 @@ export interface BodyRig {
  * proportions at the rig's height, in the rig's pose (however stylised the
  * rig), then the shape's proportion controls: the reference body fits it
  * without stretching. A generated body stands in when the reference isn't
- * available. Shown in the Body step (not exported yet).
+ * available. Shown in the Body step and written into the exported GLB.
  */
 export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: BodyShape, skinColor: string, ref: ReferenceBody | null): BodyRig {
   const human = ref ? humanJoints(ref.joints, joints) : joints;
@@ -202,6 +221,7 @@ export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: B
   g.setIndex(new Uint32BufferAttribute(body.index, 1));
   const mesh = new SkinnedMesh(g, new MeshStandardMaterial({ color: skinColor, roughness: 0.75, metalness: 0 }));
   mesh.name = 'Body';
+  (mesh.material as MeshStandardMaterial).name = 'Skin';
   mesh.frustumCulled = false;
   mesh.userData.rfBody = true;
   root.add(mesh);
