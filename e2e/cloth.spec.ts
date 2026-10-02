@@ -58,6 +58,21 @@ test('cloth: garments simulate during the walk, per fabric, and are saved', asyn
   await expect(page.getByLabel('Skirt fabric')).toHaveValue('cotton');
   await expect(page.getByLabel('Skin fabric')).toHaveValue('none');
   await expect.poll(() => store(page, 's.clothInfo && s.clothInfo.particles'), { timeout: 30000 }).toBeGreaterThan(1000);
+  // With the body shown, the clothes move onto its skeleton and the cloth follows them there.
+  await expect.poll(() => page.evaluate(() => (window as any).rigforgeAdvance?.cloth()?.dressed), { timeout: 60000 }).toBe(true);
+  await page.evaluate(() => {
+    const s = (window as any).rigforge.getState();
+    s.set('shading', 'textured');
+    s.setTestClip('walk');
+    s.set('playing', false);
+  });
+  await page.waitForTimeout(500);
+  const dressedStats = await page.evaluate(() => {
+    (window as any).rigforgeAdvance.rewind();
+    return (window as any).rigforgeAdvance(1 / 60, 90);
+  });
+  expect(dressedStats.maxOffset).toBeLessThan(0.4);
+  if (shots) await renderReview(page, shots, 'body');
 
   // Walk in the Animate step with solid clothes; the hem lags and swings.
   await page.getByRole('button', { name: 'Add animations →' }).click();
@@ -90,7 +105,7 @@ test('cloth: garments simulate during the walk, per fabric, and are saved', asyn
   expect(box.lo).toBeGreaterThan(-0.3);
   expect(box.hi).toBeLessThan(2.2);
 
-  if (shots) await renderReview(page, shots);
+  if (shots) await renderReview(page, shots, 'animate');
 
   // Turning it off puts the mesh back exactly.
   await page.locator('.steps button', { hasText: 'Body' }).click();
@@ -116,7 +131,7 @@ test('cloth: garments simulate during the walk, per fabric, and are saved', asyn
 });
 
 /** Front, side and 3/4 renders through the walk, per fabric, for checking by eye. */
-async function renderReview(page: Page, dir: string) {
+async function renderReview(page: Page, dir: string, step: string) {
   const canvas = page.locator('.stage canvas').first();
   await page.evaluate(() => (window as any).rigforge.getState().set('showSkeleton', false));
   const views: Array<[string, number]> = [['front', 0], ['side', Math.PI / 2], ['34', Math.PI / 4]];
@@ -125,6 +140,7 @@ async function renderReview(page: Page, dir: string) {
     // 'off' renders plain skinning, to compare.
     await page.evaluate((f) => (window as any).rigforge.getState().setCloth(f === 'off' ? { enabled: false } : { enabled: true, fabrics: { Skirt: f } }), fabric);
     await page.waitForTimeout(800);
+    await expect.poll(() => page.evaluate(() => !!(window as any).rigforgeAdvance?.cloth()), { timeout: 30000 }).toBe(fabric !== 'off');
     for (const [name, angle] of views) {
       await page.evaluate((a) => {
         (window as any).rigforge.getState().character.root.rotation.y = a;
@@ -134,9 +150,11 @@ async function renderReview(page: Page, dir: string) {
       for (let k = 0; k < 4; k++) {
         await advance(page, 9);
         await page.waitForTimeout(60);
-        await canvas.screenshot({ path: `${dir}/${fabric}-${name}-${k}.png` });
+        await canvas.screenshot({ path: `${dir}/${step}-${fabric}-${name}-${k}.png` });
       }
     }
     await page.evaluate(() => ((window as any).rigforge.getState().character.root.rotation.y = 0));
   }
+  await page.evaluate(() => (window as any).rigforge.getState().setCloth({ enabled: true, fabrics: {} }));
+  await expect.poll(() => page.evaluate(() => !!(window as any).rigforgeAdvance?.cloth()), { timeout: 30000 }).toBe(true);
 }

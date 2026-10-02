@@ -1,6 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useFrame } from '@react-three/fiber';
 import { useStore } from '../store';
 import { ClothController } from '../lib/cloth';
+import type { BodyRig } from '../lib/body';
 import { buildBodyMesh, loadReferenceBody } from '../lib/body';
 
 /**
@@ -23,6 +25,13 @@ export function useCloth() {
   const built = character?.built ?? null;
   const active = enabled && !!parts && !!built && !!joints && rigType === 'humanoid' && (step === 'body' || step === 'animate') && !editing;
   const ref = useRef<ClothController | null>(null);
+  // The body to collide with (never shown, so never uploaded), kept across rebuilds that don't change it.
+  const bodyRig = useRef<{ key: unknown[]; rig: BodyRig } | null>(null);
+  // The body view rebinds the mesh to the body's skeleton while it's shown (and back after): set up again for it.
+  const [skeleton, setSkeleton] = useState(built?.mesh.skeleton);
+  useFrame(() => {
+    if (built && built.mesh.skeleton !== skeleton) setSkeleton(built.mesh.skeleton);
+  });
 
   useEffect(() => {
     if (!active || !built || !joints || !parts) {
@@ -35,8 +44,10 @@ export function useCloth() {
       const reference = await loadReferenceBody();
       if (cancelled) return;
       try {
-        const rig = buildBodyMesh(built, joints, shape, '#000', reference);
-        const next = await ClothController.create(built, parts, fabrics, rig);
+        const key = [built, joints, shape, reference];
+        if (!bodyRig.current || bodyRig.current.key.some((k, i) => k !== key[i])) bodyRig.current = { key, rig: buildBodyMesh(built, joints, shape, '#000', reference) };
+        const rig = bodyRig.current.rig;
+        const next = await ClothController.create(built, parts, fabrics, rig, joints);
         if (cancelled) return;
         controller = next;
         ref.current = controller;
@@ -51,7 +62,7 @@ export function useCloth() {
       controller?.dispose();
       if (ref.current === controller) ref.current = null;
     };
-  }, [active, built, joints, parts, partsVersion, fabrics, shape]);
+  }, [active, built, joints, parts, partsVersion, fabrics, shape, skeleton]);
 
   return ref;
 }

@@ -244,7 +244,8 @@ interface State {
 
   /** Shape of the generated body (Body step); multipliers per control. */
   bodyShape: BodyShape;
-  bodyInfo: { triangles: number; ms: number } | null;
+  /** The body as last built: triangles, build time, standing height (m) and the height control it was built at. */
+  bodyInfo: { triangles: number; ms: number; height?: number; heightScale?: number } | null;
   /** Cloth simulation of the garments during playback: on/off and fabric per part. */
   cloth: { enabled: boolean; fabrics: ClothFabrics };
   clothInfo: { particles: number; ms: number } | null;

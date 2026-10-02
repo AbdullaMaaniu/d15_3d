@@ -1,5 +1,5 @@
-import { Bone, BufferGeometry, Float32BufferAttribute, Group, Matrix4, MeshStandardMaterial, Skeleton, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute } from 'three';
-import { clothesGirth, decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, tsKernels, PROPORTION_CONTROLS, type BodyMesh, type BodyShape, type Girth, type JointMap, type ReferenceBody } from '@rigforge/core';
+import { Bone, BufferGeometry, Float32BufferAttribute, Group, Matrix4, Vector3, MeshStandardMaterial, Skeleton, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute } from 'three';
+import { boneEnd, clothesGirth, decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, tsKernels, PROPORTION_CONTROLS, type BodyMesh, type BodyShape, type Girth, type JointMap, type ReferenceBody } from '@rigforge/core';
 import type { RiggedCharacter } from '@rigforge/core';
 import referenceUrl from '@rigforge/core/assets/reference-body.bin?url';
 
@@ -25,14 +25,14 @@ const fitted = new WeakMap<RiggedCharacter, { key: string; girth: Girth }>();
  * rig and proportions; the girth sliders then act on top, so the user can
  * still make the body bigger than the clothes.
  */
-function insideClothes(built: RiggedCharacter, ref: ReferenceBody, prop: JointMap, human: JointMap, shape: BodyShape): Girth {
+function insideClothes(built: RiggedCharacter, ref: ReferenceBody, joints: JointMap, prop: JointMap, human: JointMap, shape: BodyShape, bodyRest: Map<string, Vector3>): Girth {
   const proportions: BodyShape = {};
   for (const k of [...PROPORTION_CONTROLS, 'head'] as const) if (shape[k] !== undefined) proportions[k] = shape[k];
   const key = JSON.stringify(proportions);
   const cached = fitted.get(built);
   if (cached?.key === key) return cached.girth;
   const g = built.mesh.geometry;
-  const positions = g.getAttribute('position').array as Float32Array;
+  const positions = clothesOnBody(built, restMap(built, joints, prop, bodyRest));
   g.computeBoundingBox();
   const height = g.boundingBox!.max.y - g.boundingBox!.min.y;
   const solid = tsKernels.voxelize({ positions, index: g.index ? Uint32Array.from(g.index.array) : null, dx: height / 200 });
@@ -42,6 +42,92 @@ function insideClothes(built: RiggedCharacter, ref: ReferenceBody, prop: JointMa
 }
 
 /** The body with its own skeleton, which follows the character's skeleton (see syncBodyPose). */
+/**
+ * How each bone of the character moves from its rest to the body's: from its
+ * joint `from` (rig space) to the body's joint `to`, stretched along the bone
+ * by `stretch` (body length over character length). The rest rotations are
+ * the same, so that's all there is to it.
+ */
+interface BoneMove {
+  from: Vector3;
+  to: Vector3;
+  dir: Vector3;
+  stretch: number;
+  /** Rig space to the character bone's own space at rest. */
+  toLocal: Matrix4;
+}
+
+function restMap(built: RiggedCharacter, joints: JointMap, prop: JointMap, bodyRest: Map<string, Vector3>): BoneMove[] {
+  const mesh = built.mesh;
+  return mesh.skeleton.bones.map((bone, i) => {
+    const toLocal = mesh.skeleton.boneInverses[i].clone().multiply(mesh.bindMatrix);
+    const from = new Vector3().applyMatrix4(toLocal.clone().invert());
+    const to = bodyRest.get(bone.name)?.clone() ?? from.clone();
+    const e = boneEnd(joints, bone.name), be = boneEnd(prop, bone.name);
+    const a = joints.joints[bone.name], b = prop.joints[bone.name];
+    let dir = new Vector3(0, 1, 0), stretch = 1;
+    // The head (hair, hats) keeps its shape: only the limbs and torso stretch to the body's proportions.
+    if (a && b && e && be && bone.name !== 'head') {
+      const rd = new Vector3(e[0] - a[0], e[1] - a[1], e[2] - a[2]);
+      const l = rd.length();
+      if (l > 1e-6) {
+        dir = rd.divideScalar(l);
+        stretch = Math.hypot(be[0] - b[0], be[1] - b[1], be[2] - b[2]) / l;
+      }
+    }
+    return { from, to, dir, stretch, toLocal };
+  });
+}
+
+/** The character's rest surface moved onto the body's skeleton (rig space), as the body's skinning will place it. */
+export function clothesOnBody(built: RiggedCharacter, moves: BoneMove[]): Float32Array {
+  const g = built.mesh.geometry;
+  const pos = g.getAttribute('position'), si = g.getAttribute('skinIndex'), sw = g.getAttribute('skinWeight');
+  const out = new Float32Array(pos.count * 3);
+  const p = new Vector3(), d = new Vector3(), q = new Vector3();
+  for (let v = 0; v < pos.count; v++) {
+    p.fromBufferAttribute(pos, v);
+    q.set(0, 0, 0);
+    for (let k = 0; k < 4; k++) {
+      const w = sw.getComponent(v, k);
+      if (w <= 0) continue;
+      const m = moves[si.getComponent(v, k)];
+      d.subVectors(p, m.from);
+      d.addScaledVector(m.dir, (m.stretch - 1) * d.dot(m.dir)).add(m.to);
+      q.addScaledVector(d, w);
+    }
+    out[v * 3] = q.x;
+    out[v * 3 + 1] = q.y;
+    out[v * 3 + 2] = q.z;
+  }
+  return out;
+}
+
+/**
+ * Puts the character's clothes on the body: its mesh follows the body's
+ * skeleton instead of its own, moved and stretched bone by bone from the
+ * character's proportions to the body's, so the sleeves, trousers and shoes
+ * stay on the body's limbs in every pose. Returns the undo.
+ */
+export function dressBody(rig: BodyRig, built: RiggedCharacter): () => void {
+  const mesh = built.mesh;
+  const skeleton = mesh.skeleton, bindMatrix = mesh.bindMatrix.clone();
+  const inverses = rig.moves.map((m, i) => {
+    const dl = m.dir.clone().transformDirection(m.toLocal);
+    const s = m.stretch - 1;
+    const S = new Matrix4().set(
+      1 + s * dl.x * dl.x, s * dl.x * dl.y, s * dl.x * dl.z, 0,
+      s * dl.y * dl.x, 1 + s * dl.y * dl.y, s * dl.y * dl.z, 0,
+      s * dl.z * dl.x, s * dl.z * dl.y, 1 + s * dl.z * dl.z, 0,
+      0, 0, 0, 1,
+    );
+    return S.multiply(skeleton.boneInverses[i]);
+  });
+  const byName = new Map(rig.skeleton.bones.map((b) => [b.name, b]));
+  mesh.bind(new Skeleton(skeleton.bones.map((b) => byName.get(b.name) ?? b), inverses), bindMatrix);
+  return () => mesh.bind(skeleton, bindMatrix);
+}
+
 export interface BodyRig {
   /** Holds the body's bones and mesh, in the character's rig space. */
   root: Group;
@@ -54,6 +140,8 @@ export interface BodyRig {
   /** The fitted body (rig space, rest pose) and its joints, which the cloth collides with. */
   body: BodyMesh;
   joints: JointMap;
+  /** How the character's bones map onto the body's, to dress the body in the character's clothes. */
+  moves: BoneMove[];
 }
 
 /**
@@ -67,7 +155,6 @@ export interface BodyRig {
 export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: BodyShape, skinColor: string, ref: ReferenceBody | null): BodyRig {
   const human = ref ? humanJoints(ref.joints, joints) : joints;
   const prop = proportionJoints(human, shape);
-  const body = ref ? fitReferenceBody(ref, prop, shape, { rest: human, girth: insideClothes(built, ref, prop, human, shape) }) : generateBody(prop, shape);
   // A copy of the character's skeleton with the body's proportions. Rest
   // rotations are identity, as on the character, so poses copy across bone for bone.
   const bones: Bone[] = [];
@@ -90,6 +177,9 @@ export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: B
   root.name = 'BodyRig';
   root.matrixAutoUpdate = false;
   root.add(bones[0]);
+  root.updateMatrixWorld(true);
+  const rest = new Map(bones.map((b) => [b.name, b.getWorldPosition(new Vector3())]));
+  const body = ref ? fitReferenceBody(ref, prop, shape, { rest: human, girth: insideClothes(built, ref, joints, prop, human, shape, rest) }) : generateBody(prop, shape);
   const names = bones.map((b) => b.name);
   const remap = body.bones.map((n) => Math.max(0, names.indexOf(n)));
   const skinIndex = new Uint16Array(body.skinIndex.length);
@@ -112,7 +202,7 @@ export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: B
   const ground = Math.min(...Object.values(joints.tails).map((t) => t[1]), ...Object.values(joints.joints).map((t) => t[1]));
   const groundBody = Math.min(...Object.values(prop.tails).map((t) => t[1]), ...Object.values(prop.joints).map((t) => t[1]));
   const stride = joints.joints.hips && prop.joints.hips ? (prop.joints.hips[1] - groundBody) / (joints.joints.hips[1] - ground || 1) : 1;
-  return { root, mesh, skeleton, links, stride, body, joints: prop };
+  return { root, mesh, skeleton, links, stride, moves: restMap(built, joints, prop, rest), body, joints: prop };
 }
 
 /** Puts the body in the character's current pose (call every frame while it animates). */

@@ -1,4 +1,4 @@
-import { Matrix4, type SkinnedMesh } from 'three';
+import { Matrix4, type Bone, type SkinnedMesh } from 'three';
 import {
   clothMaterial,
   createClothSim,
@@ -8,10 +8,12 @@ import {
   type ClothMaterial,
   type ClothMaterialId,
   type ClothSim,
+  type BodyMesh,
+  type JointMap,
   type RiggedCharacter,
 } from '@rigforge/core';
 import type { PartsState } from './parts';
-import { syncBodyPose, type BodyRig } from './body';
+import { clothesOnBody, syncBodyPose, type BodyRig } from './body';
 
 type ClothCapsuleFit = ReturnType<typeof fitClothCapsules>[number];
 
@@ -46,18 +48,26 @@ export class ClothController {
   private bodyMats: Float64Array;
   private built: RiggedCharacter;
   private rig: BodyRig | null;
+  /** The character's mesh follows the body's skeleton (the body is shown; see dressBody). */
+  readonly dressed: boolean;
+  /** The skeleton the mesh was bound to when this was set up: a rebind means a new setup. */
+  readonly skeleton: SkinnedMesh['skeleton'];
   private frame: ClothFrame;
-  private bodySkin: { index: Uint16Array; weight: Float32Array; normals: Float32Array } | null;
+  private bodySkin: { index: Uint16Array; weight: Float32Array; normals: Float32Array; positions: Float32Array } | null;
   private capsuleBones: Int32Array;
   private capsuleBind: Float32Array;
   private live = false;
 
   /**
    * Sets up the cloth for a character: its parts' fabrics, colliding with the
-   * body (on its own skeleton, which follows the character's; see BodyRig).
+   * body. While the body is shown the clothes are on its skeleton (dressBody),
+   * so the cloth rests where that puts it and collides with the body as shown.
+   * Otherwise the body is moved onto the character's own proportions to
+   * collide with.
    */
-  static async create(built: RiggedCharacter, parts: PartsState, fabrics: ClothFabrics, rig: BodyRig | null): Promise<ClothController> {
-    const body = rig?.body ?? null;
+  static async create(built: RiggedCharacter, parts: PartsState, fabrics: ClothFabrics, rig: BodyRig | null, joints: JointMap): Promise<ClothController> {
+    const dressed = !!rig && built.mesh.skeleton !== built.skeleton;
+    const body = !rig ? null : dressed ? rig.body : undressBody(rig, built);
     const g = built.mesh.geometry;
     const orig = built.mesh.userData.rfOriginal as { index: Uint32Array } | undefined;
     const index = orig?.index ?? (g.index!.array as Uint32Array);
@@ -70,24 +80,35 @@ export class ClothController {
     });
     const triangleMaterial = new Int16Array(index.length / 3);
     for (let t = 0; t < triangleMaterial.length; t++) triangleMaterial[t] = perPart[parts.faces[t]] ?? -1;
-    const capsules = body ? fitClothCapsules(body, rig!.joints.joints) : [];
     const bindPositions = new Float32Array(g.attributes.position.array as Float32Array);
+    const restPositions = dressed ? clothesOnBody(built, rig!.moves) : bindPositions;
+    // The capsules hold the cloth off whatever skin shows: the body's, and the character's own where it isn't cloth.
+    const capsules = body ? fitClothCapsules(withSkin(body, built, restPositions, index, triangleMaterial), (dressed ? rig!.joints : joints).joints) : [];
     const sim = await createClothSim({
-      positions: bindPositions,
+      positions: restPositions,
       index,
       triangleMaterial,
       materials,
       body: body ? { positions: body.positions, normals: body.normals } : undefined,
       capsules,
     });
-    return new ClothController(built, sim, rig, capsules, bindPositions);
+    return new ClothController(built, sim, rig, body, dressed, capsules, bindPositions);
   }
 
-  private constructor(built: RiggedCharacter, sim: ClothSim, rig: BodyRig | null, capsules: ClothCapsuleFit[], bindPositions: Float32Array) {
+  private constructor(
+    built: RiggedCharacter,
+    sim: ClothSim,
+    rig: BodyRig | null,
+    body: BodyMesh | null,
+    dressed: boolean,
+    capsules: ClothCapsuleFit[],
+    bindPositions: Float32Array,
+  ) {
     const mesh = built.mesh;
-    const body = rig?.body ?? null;
     this.built = built;
     this.rig = rig;
+    this.dressed = dressed;
+    this.skeleton = mesh.skeleton;
     this.mesh = mesh;
     this.sim = sim;
     const g = mesh.geometry;
@@ -115,7 +136,7 @@ export class ClothController {
         ? (() => {
             const ids = sim.bodyVertices;
             const pick = (src: ArrayLike<number>, k: number) => Float32Array.from({ length: ids.length * k }, (_, i) => src[ids[Math.floor(i / k)] * k + (i % k)]);
-            return { index: Uint16Array.from(pick(bodyIndex!, 4)), weight: pick(body.skinWeight, 4), normals: pick(body.normals, 3) };
+            return { index: Uint16Array.from(pick(bodyIndex!, 4)), weight: pick(body.skinWeight, 4), normals: pick(body.normals, 3), positions: pick(body.positions, 3) };
           })()
         : null;
     this.capsuleBones = Int32Array.from(capsules.map((c) => names.indexOf(c.from)));
@@ -124,6 +145,7 @@ export class ClothController {
     this.frame = {
       targets: new Float32Array(sim.count * 3),
       bodyNormals: this.bodySkin ? new Float32Array(sim.bodyVertices.length * 3) : undefined,
+      bodyPositions: this.bodySkin ? new Float32Array(sim.bodyVertices.length * 3) : undefined,
       capsules: capsules.length ? new Float32Array(capsules.length * 8) : undefined,
     };
   }
@@ -176,7 +198,6 @@ export class ClothController {
 
   dispose(): void {
     this.restore();
-    this.rig?.mesh.geometry.dispose();
   }
 
   private lastPose = new Float64Array(0);
@@ -186,18 +207,19 @@ export class ClothController {
     const mesh = this.mesh;
     mesh.parent?.updateMatrixWorld(true);
     const B = this.boneMats;
-    worldBones(mesh, B);
+    // Dressed, the mesh follows the body's bones: posed here from the character's, not left to the body view's frame.
+    if (this.dressed) syncBodyPose(this.rig!, this.built);
+    worldBones(mesh, B, this.dressed ? this.rig!.skeleton.bones : undefined);
     let changed = this.lastPose.length !== B.length;
     if (changed) this.lastPose = new Float64Array(B.length);
     for (let k = 0; k < B.length; k++) {
       if (Math.abs(this.lastPose[k] - B[k]) > 1e-6) changed = true;
       this.lastPose[k] = B[k];
     }
-    // The body follows on its own skeleton.
+    // Shown, the body moves on its own skeleton; otherwise it was fitted to the character's.
     let BB = B;
-    if (this.rig) {
-      syncBodyPose(this.rig, this.built);
-      worldBones(this.rig.mesh, this.bodyMats);
+    if (this.dressed) {
+      worldBones(this.rig!.mesh, this.bodyMats);
       BB = this.bodyMats;
     }
     const g = mesh.geometry;
@@ -241,6 +263,11 @@ export class ClothController {
         this.frame.bodyNormals[i * 3] = ax / l;
         this.frame.bodyNormals[i * 3 + 1] = ay / l;
         this.frame.bodyNormals[i * 3 + 2] = az / l;
+        const px = bs.positions[i * 3], py = bs.positions[i * 3 + 1], pz = bs.positions[i * 3 + 2];
+        const out = this.frame.bodyPositions!;
+        out[i * 3] = M[0] * px + M[1] * py + M[2] * pz + M[3];
+        out[i * 3 + 1] = M[4] * px + M[5] * py + M[6] * pz + M[7];
+        out[i * 3 + 2] = M[8] * px + M[9] * py + M[10] * pz + M[11];
       }
     }
     const caps = this.frame.capsules;
@@ -298,20 +325,77 @@ export class ClothController {
   }
 }
 
-/** A skinned mesh's bone matrices in world space (3x4, row-major): meshWorld * bindMatrixInverse * boneMatrix * bindMatrix. */
-function worldBones(mesh: SkinnedMesh, out: Float64Array): void {
+/**
+ * A skinned mesh's bone matrices in world space (3x4, row-major), as the GPU
+ * skins it: meshWorld * bindMatrixInverse * boneWorld * boneInverse * bindMatrix.
+ */
+function worldBones(mesh: SkinnedMesh, out: Float64Array, bones: readonly Bone[] = mesh.skeleton.bones): void {
   const skel = mesh.skeleton;
-  skel.update();
   const pre = new Matrix4().multiplyMatrices(mesh.matrixWorld, mesh.bindMatrixInverse);
   const tmp = new Matrix4();
-  for (let b = 0; b < skel.bones.length; b++) {
-    tmp.fromArray(skel.boneMatrices!, b * 16).premultiply(pre).multiply(mesh.bindMatrix);
+  for (let b = 0; b < bones.length; b++) {
+    tmp.multiplyMatrices(bones[b].matrixWorld, skel.boneInverses[b]).premultiply(pre).multiply(mesh.bindMatrix);
     const e = tmp.elements;
     const o = b * 12;
     out[o] = e[0]; out[o + 1] = e[4]; out[o + 2] = e[8]; out[o + 3] = e[12];
     out[o + 4] = e[1]; out[o + 5] = e[5]; out[o + 6] = e[9]; out[o + 7] = e[13];
     out[o + 8] = e[2]; out[o + 9] = e[6]; out[o + 10] = e[10]; out[o + 11] = e[14];
   }
+}
+
+/** The body plus the character's vertices that aren't cloth (rest positions given), to fit capsules to both. */
+function withSkin(body: BodyMesh, built: RiggedCharacter, rest: Float32Array, index: ArrayLike<number>, triangleMaterial: Int16Array): Pick<BodyMesh, 'positions' | 'skinIndex' | 'skinWeight' | 'bones'> {
+  const g = built.mesh.geometry;
+  const si = g.attributes.skinIndex.array as ArrayLike<number>, sw = g.attributes.skinWeight.array as ArrayLike<number>;
+  const names = built.skeleton.bones.map((b) => b.name);
+  const skin = new Set<number>();
+  for (let t = 0; t < triangleMaterial.length; t++) if (triangleMaterial[t] < 0) for (let k = 0; k < 3; k++) skin.add(index[t * 3 + k]);
+  const bones = [...body.bones];
+  const boneOf = names.map((n) => {
+    const i = bones.indexOf(n);
+    return i >= 0 ? i : bones.push(n) - 1;
+  });
+  const B = body.positions.length / 3, V = B + skin.size;
+  const positions = new Float32Array(V * 3), skinIndex = new Uint16Array(V * 4), skinWeight = new Float32Array(V * 4);
+  positions.set(body.positions);
+  skinIndex.set(body.skinIndex);
+  skinWeight.set(body.skinWeight);
+  let o = B;
+  for (const v of skin) {
+    for (let k = 0; k < 3; k++) positions[o * 3 + k] = rest[v * 3 + k];
+    for (let k = 0; k < 4; k++) {
+      skinIndex[o * 4 + k] = boneOf[si[v * 4 + k]];
+      skinWeight[o * 4 + k] = sw[v * 4 + k];
+    }
+    o++;
+  }
+  return { positions, skinIndex, skinWeight, bones };
+}
+
+/**
+ * The body moved from its own proportions onto the character's, bone by bone
+ * (the inverse of dressBody's move), to collide with the clothes where the
+ * character's own skeleton puts them.
+ */
+function undressBody(rig: BodyRig, built: RiggedCharacter): BodyMesh {
+  const body = rig.body;
+  const names = built.skeleton.bones.map((b) => b.name);
+  const moves = body.bones.map((n) => rig.moves[names.indexOf(n)]);
+  const P = body.positions;
+  const out = new Float32Array(P.length);
+  for (let v = 0; v < P.length / 3; v++) {
+    for (let k = 0; k < 4; k++) {
+      const w = body.skinWeight[v * 4 + k];
+      const m = moves[body.skinIndex[v * 4 + k]];
+      if (!(w > 0) || !m) continue;
+      const dx = P[v * 3] - m.to.x, dy = P[v * 3 + 1] - m.to.y, dz = P[v * 3 + 2] - m.to.z;
+      const along = (dx * m.dir.x + dy * m.dir.y + dz * m.dir.z) * (1 / m.stretch - 1);
+      out[v * 3] += (m.from.x + dx + m.dir.x * along) * w;
+      out[v * 3 + 1] += (m.from.y + dy + m.dir.y * along) * w;
+      out[v * 3 + 2] += (m.from.z + dz + m.dir.z * along) * w;
+    }
+  }
+  return { ...body, positions: out };
 }
 
 /** Inverts an affine 3x4 matrix (row-major) into out[o..o+12]. */

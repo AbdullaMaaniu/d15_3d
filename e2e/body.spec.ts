@@ -26,7 +26,18 @@ test('body step: generated body inside the clothes, shape sliders, saved with th
   const tris = await store(page, 's.bodyInfo.triangles');
   expect(tris).toBeGreaterThan(5000);
 
-  // Sliders reshape it.
+  // Sliders reshape it, grouped head to toe; height reads in centimetres.
+  await expect(page.getByText(/^1\d\d cm$/)).toBeVisible();
+  await page.getByRole('slider', { name: 'Height' }).fill('1.1');
+  await expect.poll(() => store(page, 's.bodyShape.height')).toBe(1.1);
+  await page.getByRole('button', { name: 'Reset Size' }).click();
+  await expect.poll(() => store(page, 's.bodyShape.height === undefined')).toBe(true);
+  await page.getByRole('button', { name: 'Show Proportions' }).click();
+  await page.getByRole('slider', { name: 'Leg length' }).fill('1.1');
+  await expect.poll(() => store(page, 's.bodyShape.legLength')).toBe(1.1);
+  await page.getByRole('button', { name: 'Reset Leg length' }).click();
+  await page.getByRole('button', { name: 'Show Arms' }).click();
+  await page.getByRole('button', { name: 'Show Legs' }).click();
   const before = await store(page, 's.bodyInfo.ms');
   await page.getByRole('slider', { name: 'Biceps' }).fill('1.4');
   await expect.poll(() => store(page, 's.bodyShape.biceps')).toBe(1.4);

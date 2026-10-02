@@ -17,7 +17,7 @@ export { generateBody, bodyParts, BODY_CONTROLS, type BodyShape, type BodyContro
 export { createClothSim, fitClothCapsules, type ClothSim, type ClothSetup, type ClothFrame, type ClothCapsule } from './cloth/cloth';
 export { CLOTH_MATERIALS, clothMaterial, guessClothMaterial, type ClothMaterial, type ClothMaterialId } from './cloth/materials';
 export { proportionJoints, humanJoints, changesProportions, PROPORTION_CONTROLS } from './body/proportions';
-export { fitReferenceBody, clothesGirth, type Girth, decodeReferenceBody, encodeReferenceBody, type ReferenceBody } from './body/reference';
+export { fitReferenceBody, clothesGirth, boneEnd, type Girth, decodeReferenceBody, encodeReferenceBody, type ReferenceBody } from './body/reference';
 export {
   HUMANOID_REGIONS,
   REGION_PALETTE,

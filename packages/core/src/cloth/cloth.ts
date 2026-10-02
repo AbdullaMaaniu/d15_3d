@@ -53,6 +53,8 @@ export interface ClothFrame {
   targets: Float32Array;
   /** Skinned normals of `bodyVertices` (3 per entry). */
   bodyNormals?: Float32Array;
+  /** Skinned positions of `bodyVertices` (3 per entry): the cloth stays outside the body there. */
+  bodyPositions?: Float32Array;
   /** Capsules: a, b, ra, rb (8 per capsule, same order as the setup). */
   capsules?: Float32Array;
 }
@@ -769,6 +771,8 @@ function createSolver(setup: ClothSetup, cage: CageInput) {
   const backstop = new Int32Array(n).fill(-1);
   /** How far a particle may sink below its skinned position, along the body normal. */
   const inset = new Float32Array(n);
+  /** How close it may come to the body vertex it rests on (its distance at rest, at most MARGIN). */
+  const clearance = new Float32Array(n);
   const bodyList: number[] = [];
   if (setup.body && setup.body.positions.length) {
     const BP = setup.body.positions;
@@ -790,6 +794,8 @@ function createSolver(setup: ClothSetup, cage: CageInput) {
         }
         backstop[p] = s;
         inset[p] = Math.min(0.004, 0.3 * d);
+        const BN = setup.body.normals;
+        clearance[p] = Math.min(MARGIN, (x - BP[b * 3]) * BN[b * 3] + (y - BP[b * 3 + 1]) * BN[b * 3 + 1] + (z - BP[b * 3 + 2]) * BN[b * 3 + 2]);
       }
     }
   }
@@ -857,6 +863,9 @@ function createSolver(setup: ClothSetup, cage: CageInput) {
   const tgt = new Float32Array(n * 3);
   const tgtPrev = new Float32Array(n * 3);
   const bodyN = new Float32Array(bodyList.length * 3);
+  const bodyP = new Float32Array(bodyList.length * 3);
+  const lastBodyP = new Float32Array(bodyList.length * 3);
+  let hasBodyP = false;
   const capNow = new Float32Array(caps.length * 8);
 
   const computeNormals = () => {
@@ -1026,6 +1035,21 @@ function createSolver(setup: ClothSetup, cage: CageInput) {
         x[o + 1] = tgt[o + 1] + dy * s;
         x[o + 2] = tgt[o + 2] + dz * s;
       }
+      // And never inside the body itself: outside the plane of the body vertex it rests on.
+      if (b >= 0 && hasBodyP) {
+        const q = b * 3;
+        const nx = bodyN[q], ny = bodyN[q + 1], nz = bodyN[q + 2];
+        const px = lastBodyP[q] + (bodyP[q] - lastBodyP[q]) * f1;
+        const py = lastBodyP[q + 1] + (bodyP[q + 1] - lastBodyP[q + 1]) * f1;
+        const pz = lastBodyP[q + 2] + (bodyP[q + 2] - lastBodyP[q + 2]) * f1;
+        const e = (x[o] - px) * nx + (x[o + 1] - py) * ny + (x[o + 2] - pz) * nz;
+        if (e < clearance[p]) {
+          const push = clearance[p] - e;
+          x[o] += nx * push;
+          x[o + 1] += ny * push;
+          x[o + 2] += nz * push;
+        }
+      }
     }
 
     for (let i = 0; i < n * 3; i++) vel[i] = (x[i] - prev[i]) / h;
@@ -1034,6 +1058,8 @@ function createSolver(setup: ClothSetup, cage: CageInput) {
   const setBody = (frame: ClothFrame) => {
     if (frame.bodyNormals && frame.bodyNormals.length === bodyN.length) bodyN.set(frame.bodyNormals);
     else bodyN.fill(0);
+    hasBodyP = !!frame.bodyPositions && frame.bodyPositions.length === bodyP.length && !!frame.bodyNormals;
+    if (hasBodyP) bodyP.set(frame.bodyPositions!);
   };
 
   return {
@@ -1049,6 +1075,7 @@ function createSolver(setup: ClothSetup, cage: CageInput) {
       vel.fill(0);
       if (frame.capsules) lastCaps.set(frame.capsules);
       setBody(frame);
+      lastBodyP.set(bodyP);
       computeNormals();
       // Let gravity and the fabric take over before the first frame shows.
       const steps = Math.round(settle / SUBSTEP);
@@ -1068,6 +1095,7 @@ function createSolver(setup: ClothSetup, cage: CageInput) {
       for (let s = 0; s < steps; s++) substep(h, T, frame.capsules, s / steps, (s + 1) / steps);
       lastTargets.set(T);
       if (frame.capsules) lastCaps.set(frame.capsules);
+      lastBodyP.set(bodyP);
       computeNormals();
       return steps;
     },
