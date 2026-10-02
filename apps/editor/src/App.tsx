@@ -11,10 +11,11 @@ import { DropZone, ImportPanel } from './panels/ImportPanel';
 import { OrientPanel } from './panels/OrientPanel';
 import { RigPanel, ShadingToolbar } from './panels/RigPanel';
 import { PartsPanel } from './panels/PartsPanel';
+import { BodyPanel } from './panels/BodyPanel';
 import { AnimatePanel } from './panels/AnimatePanel';
 import { ExportPanel } from './panels/ExportPanel';
 
-const LABELS: Record<Step, string> = { import: 'Import', orient: 'Orient', rig: 'Rig', parts: 'Parts', animate: 'Animate', export: 'Export' };
+const LABELS: Record<Step, string> = { import: 'Import', orient: 'Orient', rig: 'Rig', parts: 'Parts', body: 'Body', animate: 'Animate', export: 'Export' };
 
 export function App() {
   const step = useStore((s) => s.step);
@@ -97,6 +98,7 @@ export function App() {
           {step === 'orient' && <OrientPanel />}
           {step === 'rig' && <RigPanel />}
           {step === 'parts' && <PartsPanel />}
+          {step === 'body' && <BodyPanel />}
           {step === 'animate' && <AnimatePanel />}
           {step === 'export' && <ExportPanel />}
         </aside>

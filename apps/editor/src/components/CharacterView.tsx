@@ -20,6 +20,7 @@ import {
 } from 'three';
 import { useStore } from '../store';
 import { partsDisplayMaterials } from '../lib/parts';
+import { BodyView } from './BodyView';
 import { KeyEditor } from './KeyEditor';
 import { SpringBones } from '@rigforge/three';
 
@@ -200,7 +201,8 @@ export function CharacterView() {
           <meshBasicMaterial color={parts!.defs[partsTool.region]?.color ?? '#ffffff'} depthTest={false} transparent opacity={0.95} toneMapped={false} />
         </mesh>
       )}
-      {showSkeleton && step !== 'parts' && <primitive object={helper} />}
+      {showSkeleton && step !== 'parts' && step !== 'body' && <primitive object={helper} />}
+      {step === 'body' && <BodyView />}
       {keyEditing && <KeyEditor root={character.root} />}
       {paint.active && (
         <mesh ref={brush.cursor} visible={false} renderOrder={30}>
