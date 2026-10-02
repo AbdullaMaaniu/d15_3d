@@ -22,6 +22,7 @@ import { useStore } from '../store';
 import { partsDisplayMaterials } from '../lib/parts';
 import { BodyView } from './BodyView';
 import { KeyEditor } from './KeyEditor';
+import { useCloth } from './useCloth';
 import { SpringBones } from '@rigforge/three';
 
 /** Hue per bone so the dominant-influence view reads as distinct regions. */
@@ -80,6 +81,7 @@ export function CharacterView() {
   }, [character, springConfig, springPreview, meshes]);
   const current = useRef<AnimationAction | null>(null);
   const lastTimeUpdate = useRef(0);
+  const cloth = useCloth();
 
   // Pick the clip to show: the pose-test clip (rig step) or the active library clip.
   const entry = clips.find((c) => c.id === activeClip);
@@ -135,12 +137,36 @@ export function CharacterView() {
   useFrame((_, delta) => {
     if (playing) mixer.update(Math.min(delta, 0.1));
     springs?.update(Math.min(delta, 0.1));
+    cloth.current?.update(playing ? Math.min(delta, 0.1) : 0, playing);
     const now = performance.now();
-    if (current.current && now - lastTimeUpdate.current > 100) {
+    if (now - lastTimeUpdate.current > 100) {
       lastTimeUpdate.current = now;
-      useStore.setState({ time: current.current.time });
+      if (current.current) useStore.setState({ time: current.current.time });
+      const c = cloth.current;
+      if (c && playing) useStore.setState({ clothInfo: { particles: c.sim.cageCount, ms: c.ms } });
     }
   });
+
+  // Development hook: step the clip and the cloth by fixed frames (deterministic renders in tests).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as any).rigforgeAdvance = (dt: number, frames = 1) => {
+      for (let i = 0; i < frames; i++) {
+        mixer.update(dt);
+        cloth.current?.update(dt, true);
+      }
+      return cloth.current ? { particles: cloth.current.moving, ms: cloth.current.ms, ...cloth.current.sim.stats } : null;
+    };
+    (window as any).rigforgeAdvance.cloth = () => cloth.current;
+    /** Back to the clip's start, the cloth starting over. */
+    (window as any).rigforgeAdvance.rewind = () => {
+      mixer.setTime(0);
+      cloth.current?.sim.restart();
+    };
+    return () => {
+      delete (window as any).rigforgeAdvance;
+    };
+  }, [mixer, cloth]);
 
   // Shading modes.
   const clay = useMemo(() => new MeshStandardMaterial({ color: '#b9b2a9', roughness: 0.85, metalness: 0 }), []);

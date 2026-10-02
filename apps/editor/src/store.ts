@@ -90,6 +90,7 @@ import { computeWeights, detectJoints, detectQuadrupedJoints, type SkeletonKind,
 import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
 import { remeshPrepared, type RemeshInfo, type RemeshSettings } from './lib/remesh';
 import { buildRegionContext, type PartsState } from './lib/parts';
+import type { ClothFabrics } from './lib/cloth';
 import { guessController, type ControllerSetup, type SpringChainDef, type SpringColliderDef, type SpringConfig } from '@rigforge/three';
 
 export type Step = 'import' | 'orient' | 'rig' | 'parts' | 'body' | 'animate' | 'export';
@@ -244,6 +245,9 @@ interface State {
   /** Shape of the generated body (Body step); multipliers per control. */
   bodyShape: BodyShape;
   bodyInfo: { triangles: number; ms: number } | null;
+  /** Cloth simulation of the garments during playback: on/off and fabric per part. */
+  cloth: { enabled: boolean; fabrics: ClothFabrics };
+  clothInfo: { particles: number; ms: number } | null;
 
   exportName: string;
   exportPreset: 'web' | 'mobile' | 'lossless';
@@ -294,6 +298,7 @@ interface Actions {
   setPartTint(i: number, color: string | null): void;
   previewPartsMotion(on: boolean): void;
   setBodyShape(patch: BodyShape): void;
+  setCloth(patch: { enabled?: boolean; fabrics?: ClothFabrics }): void;
   buildRig(): Promise<void>;
   useExistingRig(): void;
   editJoints(): void;
@@ -438,6 +443,8 @@ export const useStore = create<State & Actions>()((set, get) => ({
   hoverPart: null,
   bodyShape: {},
   bodyInfo: null,
+  cloth: { enabled: true, fabrics: {} },
+  clothInfo: null,
   exportName: 'character',
   exportPreset: 'web',
   exportResult: null,
@@ -766,6 +773,11 @@ export const useStore = create<State & Actions>()((set, get) => ({
       else next[k as keyof BodyShape] = v;
     }
     set({ bodyShape: next });
+  },
+
+  setCloth(patch) {
+    const c = get().cloth;
+    set({ cloth: { enabled: patch.enabled ?? c.enabled, fabrics: patch.fabrics ? { ...c.fabrics, ...patch.fabrics } : c.fabrics } });
   },
 
   setArmSpacing(degrees) {
@@ -1518,6 +1530,7 @@ function replacePrepared(prepared: PreparedMesh) {
   useStore.setState({
     parts: null,
     bodyShape: {},
+    cloth: { enabled: true, fabrics: {} },
     prepared,
     report,
     normalized: null,
@@ -1548,6 +1561,7 @@ function ingest(file: LoadedFile) {
   resetPartsHistory();
   useStore.setState({
     parts: null,
+    cloth: { enabled: true, fabrics: {} },
     file,
     prepared,
     report,
@@ -1598,7 +1612,7 @@ useStore.subscribe((s, prev) => {
   const changed =
     s.prepared !== prev.prepared || s.joints !== prev.joints || s.character !== prev.character || s.clips !== prev.clips ||
     s.weightsVersion !== prev.weightsVersion || s.rotation !== prev.rotation || s.height !== prev.height || s.exportName !== prev.exportName ||
-    s.partsVersion !== prev.partsVersion || s.parts !== prev.parts || s.bodyShape !== prev.bodyShape;
+    s.partsVersion !== prev.partsVersion || s.parts !== prev.parts || s.bodyShape !== prev.bodyShape || s.cloth !== prev.cloth;
   if (!changed || canSave(s)) return;
   if (autosaveTimer) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(async () => {

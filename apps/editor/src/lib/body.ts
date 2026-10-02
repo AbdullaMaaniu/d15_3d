@@ -1,5 +1,5 @@
 import { BufferGeometry, Float32BufferAttribute, Matrix4, MeshStandardMaterial, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute } from 'three';
-import { decodeReferenceBody, fitReferenceBody, generateBody, insideSlim, tsKernels, type BodyShape, type JointMap, type ReferenceBody } from '@rigforge/core';
+import { decodeReferenceBody, fitReferenceBody, generateBody, insideSlim, tsKernels, type BodyMesh, type BodyShape, type JointMap, type ReferenceBody } from '@rigforge/core';
 import type { RiggedCharacter } from '@rigforge/core';
 import referenceUrl from '@rigforge/core/assets/reference-body.bin?url';
 
@@ -33,13 +33,18 @@ function insideCharacter(built: RiggedCharacter, joints: JointMap, ref: Referenc
   return slim;
 }
 
+/** The body fitted inside this character (rig space, bind pose): the reference body, or a generated one without it. */
+export function fitBody(built: RiggedCharacter, joints: JointMap, shape: BodyShape, ref: ReferenceBody | null): BodyMesh {
+  return ref ? fitReferenceBody(ref, joints, shape, insideCharacter(built, joints, ref)) : generateBody(joints, shape);
+}
+
 /**
  * The body as a skinned mesh driven by the character's own skeleton, so it
  * moves with every clip: the reference body fitted to the rig and slimmed to
  * sit inside the clothes, or a generated one when the reference isn't available. Shown in the Body step (not exported yet).
  */
 export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: BodyShape, skinColor: string, ref: ReferenceBody | null): SkinnedMesh {
-  const body = ref ? fitReferenceBody(ref, joints, shape, insideCharacter(built, joints, ref)) : generateBody(joints, shape);
+  const body = fitBody(built, joints, shape, ref);
   const names = built.skeleton.bones.map((b) => b.name);
   const remap = body.bones.map((n) => Math.max(0, names.indexOf(n)));
   const skinIndex = new Uint16Array(body.skinIndex.length);

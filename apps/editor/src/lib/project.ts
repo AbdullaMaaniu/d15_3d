@@ -25,6 +25,7 @@ import {
 import { ALL_STEPS, accessoryDefs, type ClipEntry, type RigType, type useStore } from '../store';
 import type { BodyShape, RegionDef } from '@rigforge/core';
 import type { ControllerSetup, SpringConfig } from '@rigforge/three';
+import type { ClothFabrics } from './cloth';
 
 type StoreState = ReturnType<typeof useStore.getState>;
 
@@ -59,6 +60,8 @@ interface ProjectFile {
   parts?: { defs: RegionDef[]; faces: string; tints: Array<string | null> } | null;
   /** Generated body shape (Body step). */
   bodyShape?: BodyShape;
+  /** Cloth simulation: on/off and fabric per part. */
+  cloth?: { enabled: boolean; fabrics: ClothFabrics };
   /** Whether the prop rig was built (props don't store weights: they're rigid). */
   propBuilt?: boolean;
 }
@@ -120,6 +123,7 @@ export async function saveProject(s: StoreState): Promise<Blob> {
     controller: s.controller,
     parts: s.parts ? { defs: s.parts.defs, faces: b64.encode(s.parts.faces), tints: s.parts.tints } : null,
     bodyShape: s.bodyShape,
+    cloth: s.cloth,
     armSpacing: s.armSpacing,
     propBuilt: s.rigType === 'prop' && !!built,
     rig: built && s.rigType !== 'prop' && s.joints
@@ -211,6 +215,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     // Re-applied to the mesh once the character is in the store.
     parts: file.parts ? { defs: file.parts.defs, faces: b64.decode(file.parts.faces), tints: file.parts.tints } : null,
     bodyShape: file.bodyShape ?? {},
+    cloth: file.cloth ?? { enabled: true, fabrics: {} },
     controller: file.controller ?? null,
   });
   const baseDefs = (defs: readonly import('@rigforge/core').BoneDef[]) => [...defs, ...accessoryDefs(file.extraBones ?? [])];
