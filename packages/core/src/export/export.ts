@@ -1,4 +1,4 @@
-import type { AnimationClip, Object3D, SkinnedMesh } from 'three';
+import { PropertyBinding, type Vector3, type AnimationClip, type Bone, type KeyframeTrack, type Object3D, type SkinnedMesh } from 'three';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { Document, WebIO, type Texture } from '@gltf-transform/core';
 import { ALL_EXTENSIONS, EXTMeshoptCompression, EXTTextureWebP } from '@gltf-transform/extensions';
@@ -20,10 +20,27 @@ export interface ExportOptions {
   onProgress?: (stage: string) => void;
   /**
    * Extra meshes skinned to the character's own skeleton, written beside its
-   * mesh: the generated body, and separated garments once there are any. Each is
-   * placed next to the character mesh only while serializing.
+   * mesh: separated garments, for instance. Each is placed next to the character
+   * mesh only while serializing.
    */
   layers?: SkinnedMesh[];
+  /** Second skeletons that copy the character's pose bone for bone, such as the generated body. */
+  followers?: Follower[];
+}
+
+/**
+ * A skeleton with its own proportions that copies the character's pose: each
+ * bone takes its source's rotation and scale, and its source's move away from
+ * rest times `stride`. Exported as its own bones (prefixed with the root's
+ * name) with tracks in every clip, so any glTF player animates it; the bones
+ * carry `extras.rigforge.follows` so @rigforge/three keeps it in step with IK,
+ * look-at and root motion too.
+ */
+export interface Follower {
+  /** Holds the follower's bones and meshes, in rig space, at rest. */
+  root: Object3D;
+  links: Array<{ bone: Bone; source: Bone }>;
+  stride: number;
 }
 
 export interface SizeBreakdown {
@@ -53,17 +70,67 @@ export async function toGLB(root: Object3D, clips: AnimationClip[]): Promise<Uin
   return new Uint8Array(result as ArrayBuffer);
 }
 
+const followerName = (f: Follower, name: string) => `${f.root.name}_${name}`;
+
+/** Names the follower's bones apart from the character's and tags them for the runtime; returns an undo. */
+function prepareFollower(f: Follower): () => void {
+  const saved = f.links.map(({ bone }) => ({ bone, name: bone.name, userData: bone.userData }));
+  const rootData = f.root.userData;
+  for (const { bone, source } of f.links) {
+    bone.name = followerName(f, source.name);
+    bone.userData = { ...bone.userData, rigforge: { follows: source.name } };
+  }
+  f.root.userData = { ...rootData, rigforge: { ...(rootData.rigforge ?? {}), follower: { stride: f.stride } } };
+  return () => {
+    for (const s of saved) {
+      s.bone.name = s.name;
+      s.bone.userData = s.userData;
+    }
+    f.root.userData = rootData;
+  };
+}
+
+/** The clip plus a copy of each followed bone's tracks for its follower (positions scaled to its size). */
+function withFollowerTracks(clip: AnimationClip, followers: Follower[]): AnimationClip {
+  if (!followers.length) return clip;
+  const extra: KeyframeTrack[] = [];
+  for (const track of clip.tracks) {
+    const { nodeName, propertyName } = PropertyBinding.parseTrackName(track.name);
+    for (const f of followers) {
+      const link = f.links.find((l) => l.source.name === nodeName);
+      if (!link) continue;
+      const copy = track.clone();
+      copy.name = `${followerName(f, nodeName)}.${propertyName}`;
+      if (propertyName === 'position') {
+        const rest = link.bone.position, src = (link.source.userData.restPosition as Vector3 | undefined) ?? link.source.position;
+        const v = copy.values;
+        for (let i = 0; i < v.length; i += 3) {
+          v[i] = (v[i] - src.x) * f.stride + rest.x;
+          v[i + 1] = (v[i + 1] - src.y) * f.stride + rest.y;
+          v[i + 2] = (v[i + 2] - src.z) * f.stride + rest.z;
+        }
+      }
+      extra.push(copy);
+    }
+  }
+  const out = clip.clone();
+  out.tracks.push(...extra);
+  out.userData = clip.userData;
+  return out;
+}
+
 /** Runs `fn` with each layer parented beside the root's skinned mesh, sharing its bind space. */
-async function withLayers<T>(root: Object3D, layers: SkinnedMesh[], fn: () => Promise<T>): Promise<T> {
+async function withLayers<T>(root: Object3D, layers: Object3D[], fn: () => Promise<T>): Promise<T> {
   if (!layers.length) return fn();
   let host: SkinnedMesh | null = null;
   root.traverse((o) => {
     if (!host && (o as SkinnedMesh).isSkinnedMesh && !layers.includes(o as SkinnedMesh)) host = o as SkinnedMesh;
   });
   const parent = (host as SkinnedMesh | null)?.parent ?? root;
-  const saved = layers.map((l) => ({ layer: l, parent: l.parent, bind: l.bindMatrix.clone() }));
+  const saved = layers.map((l) => ({ layer: l, parent: l.parent, bind: (l as SkinnedMesh).bindMatrix?.clone() }));
+  const skinned = (l: Object3D): l is SkinnedMesh => !!(l as SkinnedMesh).isSkinnedMesh;
   for (const l of layers) {
-    if (host) l.bind(l.skeleton, (host as SkinnedMesh).bindMatrix);
+    if (host && skinned(l)) l.bind(l.skeleton, (host as SkinnedMesh).bindMatrix);
     parent.add(l);
   }
   root.updateMatrixWorld(true);
@@ -73,7 +140,7 @@ async function withLayers<T>(root: Object3D, layers: SkinnedMesh[], fn: () => Pr
     for (const { layer, parent: was, bind } of saved) {
       if (was) was.add(layer);
       else layer.removeFromParent();
-      layer.bind(layer.skeleton, bind);
+      if (bind) (layer as SkinnedMesh).bind((layer as SkinnedMesh).skeleton, bind);
     }
   }
 }
@@ -112,7 +179,15 @@ export async function exportCharacter(root: Object3D, clips: AnimationClip[], op
   const warnings: string[] = [];
 
   progress('Serializing glTF');
-  const raw = await withLayers(root, options.layers ?? [], () => toGLB(root, clips));
+  const followers = options.followers ?? [];
+  const restore = followers.map(prepareFollower);
+  const allClips = clips.map((c) => withFollowerTracks(c, followers));
+  let raw: Uint8Array;
+  try {
+    raw = await withLayers(root, [...(options.layers ?? []), ...followers.map((f) => f.root)], () => toGLB(root, allClips));
+  } finally {
+    for (const r of restore) r();
+  }
   const io = await createIO();
   const doc = await io.readBinary(raw);
   const before = sizeBreakdown(doc, raw.byteLength);

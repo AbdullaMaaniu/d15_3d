@@ -5,7 +5,7 @@ const store = (page: import('@playwright/test').Page, expr: string) =>
 const drive = (page: import('@playwright/test').Page, expr: string) =>
   page.evaluate((e) => new Function('d', `return ${e}`)((window as any).rigforgeDrive), expr);
 
-test('export: the body is written under the clothes and drives with the character', async ({ page }) => {
+test('export: the body is written under the clothes and keeps up with the character in the runtime', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => {
@@ -39,9 +39,17 @@ test('export: the body is written under the clothes and drives with the characte
   // The exported file loads in the runtime with both meshes on one skeleton.
   await page.getByRole('button', { name: '▶ Test drive' }).click();
   await expect(page.getByTestId('drive-state')).toContainText('move', { timeout: 30_000 });
-  const meshes = await drive(page, `(() => { const out = []; d.character.object.traverse((o) => { if (o.isSkinnedMesh) out.push([o.name, o.skeleton.bones.length]); }); return out; })()`);
-  expect((meshes as Array<[string, number]>).map(([n]) => n).sort()).toEqual(['Body', 'CharacterMesh']);
-  const [a, b] = (meshes as Array<[string, number]>).map(([, n]) => n);
-  expect(a).toBe(b);
+  const meshes = await drive(page, `(() => { const out = []; d.character.object.traverse((o) => { if (o.isSkinnedMesh) out.push(o.name); }); return out.sort(); })()`);
+  expect(meshes).toEqual(['BodyMesh', 'CharacterMesh']);
+  // Walking with root motion and foot IK, the body's hips stay with the character's.
+  const hipsGap = `(() => { const o = d.character.object; o.updateMatrixWorld(true); const V = o.position.constructor; return o.getObjectByName('Body_hips').getWorldPosition(new V()).distanceTo(o.getObjectByName('hips').getWorldPosition(new V())); })()`;
+  const still = (await drive(page, hipsGap)) as number;
+  await page.keyboard.down('KeyW');
+  await expect.poll(async () => ((await drive(page, 'd.position')) as number[])[2], { timeout: 30_000 }).toBeGreaterThan(0.2);
+  const gap = (await drive(page, hipsGap)) as number;
+  await page.keyboard.up('KeyW');
+  // (The body's hips sit a little higher or lower than the character's, by its proportions.)
+  expect(still).toBeLessThan(0.15);
+  expect(Math.abs(gap - still)).toBeLessThan(0.05);
   expect(errors).toEqual([]);
 });

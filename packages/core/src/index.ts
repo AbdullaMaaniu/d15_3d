@@ -14,7 +14,8 @@ export { detectFingers, type FingerDetection } from './rig/fingers';
 export { computeSkinWeights, computeSkinWeightsAsync, boneSegments, type SkinWeights, type WeightOptions } from './rig/weights';
 export { buildSkinnedCharacter, resetPose, type RiggedCharacter } from './rig/build';
 export { generateBody, bodyParts, BODY_CONTROLS, type BodyShape, type BodyControl, type BodyControlDef, type BodyMesh } from './body/generate';
-export { fitReferenceBody, insideSlim, decodeReferenceBody, encodeReferenceBody, type ReferenceBody } from './body/reference';
+export { proportionJoints, humanJoints, changesProportions, PROPORTION_CONTROLS } from './body/proportions';
+export { fitReferenceBody, decodeReferenceBody, encodeReferenceBody, type ReferenceBody } from './body/reference';
 export {
   HUMANOID_REGIONS,
   REGION_PALETTE,
@@ -55,7 +56,7 @@ export { armClearance, measureArmClearance, type ArmClearance } from './anim/arm
 export { sliceClip, alignHeading, findLoop, makeSeamlessLoop, resampleClip, mirrorClip, symmetrizeArms, poseDistance, clipDuration } from './anim/clipTools';
 export { encodeClip, decodeClip, type EncodedClip, type PresetPack } from './anim/codec';
 
-export { exportCharacter, optimizeDocument, EXPORT_PRESETS, toGLB, createIO, sizeBreakdown, type ExportOptions, type ExportPreset, type ExportResult, type SizeBreakdown } from './export/export';
+export { exportCharacter, optimizeDocument, EXPORT_PRESETS, toGLB, createIO, sizeBreakdown, type ExportOptions, type ExportPreset, type ExportResult, type Follower, type SizeBreakdown } from './export/export';
 export { generateSnippet, type SnippetInput, type SnippetKind } from './export/snippets';
 export { createPaintContext, applyBrush, snapshotWeights, restoreWeights, type BrushMode, type BrushStroke, type PaintContext } from './rig/paint';
 export {

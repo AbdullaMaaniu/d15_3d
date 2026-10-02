@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { AnimationMixer, BufferGeometry, Float32BufferAttribute, Matrix4, MeshStandardMaterial, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute, Vector3 } from 'three';
+import { AnimationMixer, Bone, BufferGeometry, Group, Skeleton, Float32BufferAttribute, Matrix4, MeshStandardMaterial, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute, Vector3 } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { createMannequin } from '../src/mesh/mannequin';
@@ -16,6 +16,7 @@ import { createWasmKernels } from '../src/kernels';
 import { exportCharacter } from '../src/export/export';
 import { generateSnippet } from '../src/export/snippets';
 import { decodeReferenceBody, fitReferenceBody } from '../src/body/reference';
+import { humanJoints } from '../src/body/proportions';
 
 beforeAll(() => {
   // GLTFExporter uses FileReader for binary output; Node lacks it.
@@ -61,7 +62,7 @@ describe('export', () => {
     expect(walk.duration).toBeGreaterThan(0.8);
   });
 
-  it('writes the body beside the clothes, skinned to the same skeleton', async () => {
+  it('writes the body on its own skeleton that follows the character, in any glTF player', async () => {
     const kernels = await createWasmKernels(readFileSync(fileURLToPath(new URL('../wasm/rigforge_kernels.wasm', import.meta.url))));
     const pack = JSON.parse(readFileSync(fileURLToPath(new URL('../../presets/clips.json', import.meta.url)), 'utf8')) as PresetPack;
     const { geometry } = createMannequin({ pose: 'A', detail: 8 });
@@ -72,9 +73,27 @@ describe('export', () => {
     const w = computeSkinWeights(positions, index, defs, detected, { kernels, resolution: 96 });
     const c = buildSkinnedCharacter(geometry, new MeshStandardMaterial(), defs, detected, w.skinIndex, w.skinWeight);
 
+    // The body on a skeleton with human proportions, as the editor builds it.
     const ref = decodeReferenceBody(readFileSync(new URL('../assets/reference-body.bin', import.meta.url)));
-    const fitted = fitReferenceBody(ref, detected, {}, 0.9);
-    const names = c.skeleton.bones.map((b) => b.name);
+    const human = humanJoints(ref.joints, detected);
+    const fitted = fitReferenceBody(ref, human, {}, { rest: human });
+    const bones: Bone[] = [];
+    const byName = new Map<string, Bone>();
+    for (const source of c.skeleton.bones) {
+      const bone = new Bone();
+      bone.name = source.name;
+      const parent = source.parent && byName.get(source.parent.name);
+      const p = human.joints[source.name], pp = parent ? human.joints[parent.name] : [0, 0, 0];
+      if (p && pp) bone.position.set(p[0] - pp[0], p[1] - pp[1], p[2] - pp[2]);
+      else bone.position.copy(source.position);
+      if (parent) parent.add(bone);
+      bones.push(bone);
+      byName.set(bone.name, bone);
+    }
+    const rigRoot = new Group();
+    rigRoot.name = 'Body';
+    rigRoot.add(bones[0]);
+    const names = bones.map((b) => b.name);
     const g = new BufferGeometry();
     g.setAttribute('position', new Float32BufferAttribute(fitted.positions, 3));
     g.setAttribute('normal', new Float32BufferAttribute(fitted.normals, 3));
@@ -82,16 +101,22 @@ describe('export', () => {
     g.setAttribute('skinWeight', new Float32BufferAttribute(fitted.skinWeight, 4));
     g.setIndex(new Uint32BufferAttribute(fitted.index, 1));
     const body = new SkinnedMesh(g, new MeshStandardMaterial());
-    body.name = 'Body';
-    body.bind(c.skeleton, new Matrix4());
+    body.name = 'BodyMesh';
+    rigRoot.add(body);
+    rigRoot.updateMatrixWorld(true);
+    body.bind(new Skeleton(bones), new Matrix4());
+    const stride = human.joints.hips[1] / detected.joints.hips[1];
+    const follower = { root: rigRoot, links: bones.map((bone, i) => ({ bone, source: c.skeleton.bones[i] })), stride };
+    const rest = bones.map((b) => b.position.clone());
 
     const binding = bindSkeleton(c.root, autoMapBones(c.root).map);
     const walk = bakeClip(binding, decodeClip(pack.clips.find((x) => x.id === 'walk')!));
-    const web = await exportCharacter(c.root, [walk], { preset: 'web', layers: [body] });
-    const out = await exportCharacter(c.root, [walk], { preset: 'lossless', layers: [body] });
-    // The layer is put back where it was.
-    expect(body.parent).toBeNull();
-    expect(c.root.getObjectByName('Body')).toBeUndefined();
+    const web = await exportCharacter(c.root, [walk], { preset: 'web', followers: [follower] });
+    const out = await exportCharacter(c.root, [walk], { preset: 'lossless', followers: [follower] });
+    // Everything is put back as it was.
+    expect(rigRoot.parent).toBeNull();
+    expect(bones[0].name).toBe('hips');
+    expect(walk.tracks.every((t) => !t.name.startsWith('Body_'))).toBe(true);
 
     const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
     const parse = (glb: Uint8Array) =>
@@ -101,20 +126,18 @@ describe('export', () => {
       scene.traverse((o: any) => { if (o.isSkinnedMesh) n.push(o.name); });
       return n.sort();
     };
-    expect(skinnedNames((await parse(web.glb)).scene)).toEqual(['Body', 'CharacterMesh']);
+    expect(skinnedNames((await parse(web.glb)).scene)).toEqual(['BodyMesh', 'CharacterMesh']);
 
     // Uncompressed, so vertices can be matched one to one.
     const gltf = await parse(out.glb);
-    const meshes: SkinnedMesh[] = [];
-    gltf.scene.traverse((o: any) => { if (o.isSkinnedMesh) meshes.push(o); });
-    expect(meshes.map((m) => m.name).sort()).toEqual(['Body', 'CharacterMesh']);
-    const loaded = meshes.find((m) => m.name === 'Body')!;
+    const loaded = gltf.scene.getObjectByName('BodyMesh') as SkinnedMesh;
     expect(loaded.geometry.index!.count).toBe(fitted.index.length);
-    // Both meshes drive the same bones.
-    const clothes = meshes.find((m) => m.name !== 'Body')!;
-    expect(loaded.skeleton.bones.every((b) => clothes.skeleton.bones.includes(b))).toBe(true);
+    // Its own bones, tagged with the character bone each one follows; the character's names stay unique.
+    expect(loaded.skeleton.bones[0].name).toBe('Body_hips');
+    expect(loaded.skeleton.bones.every((b) => b.userData.rigforge?.follows === b.name.slice(5))).toBe(true);
+    expect(gltf.scene.getObjectByName('hips')).toBe((gltf.scene.getObjectByName('CharacterMesh') as SkinnedMesh).skeleton.bones[0]);
 
-    // Mid-stride, the re-imported body deforms like the one in the editor.
+    // Mid-stride, a plain AnimationMixer poses the re-imported body as the editor does (syncBodyPose).
     const mixer = new AnimationMixer(gltf.scene);
     mixer.clipAction(gltf.animations[0]).play();
     mixer.setTime(walk.duration * 0.3);
@@ -122,24 +145,22 @@ describe('export', () => {
     const src = new AnimationMixer(c.root);
     src.clipAction(walk).play();
     src.setTime(walk.duration * 0.3);
-    c.root.add(body);
-    c.root.updateMatrixWorld(true);
-    // Compare the skinned vertex at the same rest position as each probe.
+    bones.forEach((b, i) => {
+      const s = c.skeleton.bones[i];
+      b.quaternion.copy(s.quaternion);
+      b.position.copy(s.position).sub(s.userData.restPosition).multiplyScalar(stride).add(rest[i]);
+    });
+    rigRoot.updateMatrixWorld(true);
     const a = new Vector3(), b = new Vector3();
-    const probes = [0, 1000, 5000, 9000, 15000].filter((v) => v < fitted.positions.length / 3);
-    const lp = loaded.geometry.getAttribute('position');
-    for (const v of probes) {
-      let best = 0, bestD = Infinity;
-      for (let i = 0; i < lp.count; i++) {
-        const d = (lp.getX(i) - fitted.positions[v * 3]) ** 2 + (lp.getY(i) - fitted.positions[v * 3 + 1]) ** 2 + (lp.getZ(i) - fitted.positions[v * 3 + 2]) ** 2;
-        if (d < bestD) { bestD = d; best = i; }
-      }
+    let moved = 0;
+    for (const v of [0, 1000, 5000, 9000, 15000, 25000]) {
+      if (v >= fitted.positions.length / 3) continue;
       body.getVertexPosition(v, a).applyMatrix4(body.matrixWorld);
-      loaded.getVertexPosition(best, b).applyMatrix4(loaded.matrixWorld);
+      loaded.getVertexPosition(v, b).applyMatrix4(loaded.matrixWorld);
       expect(a.distanceTo(b)).toBeLessThan(0.01);
+      moved = Math.max(moved, a.distanceTo(b.fromArray(fitted.positions, v * 3)));
     }
     // And it actually moved off its rest pose.
-    const moved = Math.max(...probes.map((v) => body.getVertexPosition(v, a).distanceTo(b.fromArray(fitted.positions, v * 3))));
     expect(moved).toBeGreaterThan(0.02);
   });
 

@@ -146,6 +146,8 @@ export class Character {
   private rootLooped = false;
   /** Secondary motion (hair, tails, capes); set up from the file automatically when present. */
   springs: SpringBones | null = null;
+  /** Bones of a second skeleton (RigForge's body) that copy the character's pose after IK, look-at and springs. */
+  private followers: Array<{ bone: Object3D; source: Object3D; rest: Vector3; sourceRest: Vector3; stride: number }> = [];
 
   constructor(object: Object3D, clips: AnimationClip[]) {
     this.object = object;
@@ -165,6 +167,16 @@ export class Character {
       springConfig ??= (o.userData?.rigforge as { springs?: SpringConfig } | undefined)?.springs;
     });
     if (springConfig?.chains?.length) this.springs = new SpringBones(object, springConfig, (n) => this.bone(n) ?? object.getObjectByName(n));
+    // Follower skeletons (the body under the clothes) exported by RigForge, captured at rest.
+    object.traverse((o) => {
+      const stride = (o.userData?.rigforge as { follower?: { stride: number } } | undefined)?.follower?.stride;
+      if (stride === undefined) return;
+      o.traverse((b) => {
+        const follows = (b.userData?.rigforge as { follows?: string } | undefined)?.follows;
+        const source = follows ? this.bone(follows) : undefined;
+        if (source) this.followers.push({ bone: b, source, rest: b.position.clone(), sourceRest: source.position.clone(), stride });
+      });
+    });
     // Capture rest orientations used by lookAt before any animation runs.
     for (const name of ['head', 'neck']) {
       const b = this.bone(name);
@@ -273,6 +285,11 @@ export class Character {
     this.footIK?.apply();
     if (this.lookTarget) this.applyLookAt();
     this.springs?.update(delta);
+    for (const f of this.followers) {
+      f.bone.quaternion.copy(f.source.quaternion);
+      f.bone.scale.copy(f.source.scale);
+      f.bone.position.copy(f.source.position).sub(f.sourceRest).multiplyScalar(f.stride).add(f.rest);
+    }
   }
 
   /** Replaces the spring bone setup (null removes it). */

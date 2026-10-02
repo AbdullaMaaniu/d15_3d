@@ -1,16 +1,24 @@
-import { exportCharacter, type ExportResult } from '@rigforge/core';
+import { exportCharacter, type ExportResult, type Follower } from '@rigforge/core';
 import type { ControllerSetup } from '@rigforge/three';
 import type { SkinnedMesh } from 'three';
 import { suggestController, useStore } from '../store';
-import { exportBodyMesh } from './body';
+import { exportBodyRig } from './body';
 
 /**
- * Meshes exported beside the character's own, skinned to its skeleton: the
- * generated body. Separated garments join this list once they exist.
+ * Meshes exported beside the character's own, skinned to its skeleton.
+ * Separated garments join this list once they exist.
  */
 async function exportLayers(): Promise<SkinnedMesh[]> {
-  const body = await exportBodyMesh();
-  return body ? [body] : [];
+  return [];
+}
+
+/** The generated body on its own skeleton, which follows the character's. */
+async function exportFollowers(): Promise<Follower[]> {
+  const rig = await exportBodyRig();
+  if (!rig) return [];
+  rig.root.name = 'Body';
+  rig.mesh.name = 'BodyMesh';
+  return [{ root: rig.root, links: rig.links.map(({ bone, source }) => ({ bone, source })), stride: rig.stride }];
 }
 
 /** The controller roles to export: the user's edits if still valid, else the suggestion. */
@@ -51,12 +59,14 @@ export async function buildGlb(onProgress?: (stage: string) => void): Promise<Ex
     });
     onProgress?.('Fitting the body');
     const layers = await exportLayers();
+    const followers = await exportFollowers();
     try {
-      const res = await exportCharacter(character.root, baked, { preset: exportPreset, onProgress, layers });
+      const res = await exportCharacter(character.root, baked, { preset: exportPreset, onProgress, layers, followers });
       set('exportResult', res);
       return res;
     } finally {
       for (const l of layers) l.geometry.dispose();
+      for (const f of followers) f.root.traverse((o) => (o as SkinnedMesh).isSkinnedMesh && (o as SkinnedMesh).geometry.dispose());
     }
   } finally {
     set('playing', wasPlaying);
