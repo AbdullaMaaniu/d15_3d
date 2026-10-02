@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { SkinnedMesh } from 'three';
 import { partsSummary, useStore } from '../store';
-import { buildBodyMesh } from '../lib/body';
+import { buildBodyMesh, loadReferenceBody } from '../lib/body';
 
 const DEFAULT_SKIN = '#d9a07a';
 
@@ -20,14 +20,17 @@ export function BodyView() {
       setMesh(null);
       return;
     }
-    const t = setTimeout(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const ref = await loadReferenceBody();
+      if (cancelled) return;
       // Skin colour from the Parts step, when it has a Skin part.
       const parts = useStore.getState().parts;
       const skinIndex = parts?.defs.findIndex((d) => d.name.toLowerCase() === 'skin') ?? -1;
       const skin = (skinIndex >= 0 && partsSummary()?.baseColors[skinIndex]) || DEFAULT_SKIN;
       try {
         const t0 = performance.now();
-        const next = buildBodyMesh(built, joints, shape, skin);
+        const next = buildBodyMesh(built, joints, shape, skin, ref);
         useStore.setState({ bodyInfo: { triangles: next.geometry.index!.count / 3, ms: performance.now() - t0 } });
         setMesh((prev) => {
           prev?.geometry.dispose();
@@ -37,7 +40,10 @@ export function BodyView() {
         console.warn('[rigforge] body generation failed', e);
       }
     }, 60);
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [character, joints, shape, rigType, partsVersion]);
 
   useEffect(() => () => mesh?.geometry.dispose(), [mesh]);

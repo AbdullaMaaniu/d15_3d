@@ -196,7 +196,9 @@ export function detectFingers(
   const bins = exactBins.length >= 3 ? exactBins : splitBins.length >= 3 ? splitBins : null;
   if (bins) {
     const tStar = bins[Math.floor(bins.length / 2)];
-    const fingerRuns = fingerRunsAt(tStar).sort((r1, r2) => r2[0] - r1[0]); // thumb side (+s) first
+    // Four separate runs are the fingers as they are; splitting a wide one there would make five.
+    const starRuns = bins === exactBins ? runsAt(tStar, lo, hi).filter((r) => r[1] - r[0] + 1 >= 2) : fingerRunsAt(tStar);
+    const fingerRuns = starRuns.sort((r1, r2) => r2[0] - r1[0]); // thumb side (+s) first
     const widthAtStar = fingerRuns.map((r) => r[1] - r[0] + 1);
     const overlapping = (tb: number, cur: [number, number]) => {
       let best: [number, number] | undefined;

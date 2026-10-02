@@ -7,11 +7,13 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
-    "./wasm/rigforge_kernels.wasm": "./wasm/rigforge_kernels.wasm"
+    "./wasm/rigforge_kernels.wasm": "./wasm/rigforge_kernels.wasm",
+    "./assets/reference-body.bin": "./assets/reference-body.bin"
   },
   "files": [
     "dist",
-    "wasm"
+    "wasm",
+    "assets"
   ],
   "publishConfig": {
     "exports": {
@@ -19,12 +21,14 @@
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
       },
-      "./wasm/rigforge_kernels.wasm": "./wasm/rigforge_kernels.wasm"
+      "./wasm/rigforge_kernels.wasm": "./wasm/rigforge_kernels.wasm",
+      "./assets/reference-body.bin": "./assets/reference-body.bin"
     }
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean --external three",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:reference": "tsx scripts/build-reference-body.ts"
   },
   "peerDependencies": {
     "three": ">=0.160.0"
