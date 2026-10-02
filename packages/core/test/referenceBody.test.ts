@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createMannequin } from '../src/mesh/mannequin';
-import { decodeReferenceBody, encodeReferenceBody, fitReferenceBody } from '../src/body/reference';
+import { clothesGirth, decodeReferenceBody, encodeReferenceBody, fitReferenceBody } from '../src/body/reference';
+import { voxelizeTS as voxelize } from '../src/voxel/voxelize';
 import { humanJoints } from '../src/body/proportions';
 
 const ref = decodeReferenceBody(readFileSync(new URL('../assets/reference-body.bin', import.meta.url)));
@@ -102,5 +103,28 @@ describe('reference body', () => {
     // Standing on the rig's ground.
     const low = (m: { joints: Record<string, number[]>; tails: Record<string, number[]> }) => Math.min(...[...Object.values(m.joints), ...Object.values(m.tails)].map((p) => p[1]));
     expect(low(human)).toBeCloseTo(low(truth), 4);
+  });
+
+  it('thins each part to fit inside clothes, but no thinner than a slim adult', () => {
+    const parts = ['hips', 'spine', 'chest', 'upperChest', 'leftUpperArm', 'leftLowerArm', 'leftUpperLeg', 'leftLowerLeg'];
+    const solidOf = (girth: Record<string, number>) => {
+      const b = fitReferenceBody(ref, ref.joints, {}, { girth });
+      return voxelize({ positions: b.positions, index: b.index, dx: 1.8 / 300 });
+    };
+    // Clothes that fit the body as it is: nothing to do.
+    expect(clothesGirth(ref, ref.joints, solidOf({}))).toEqual({});
+    // Clothes 8% tighter all round: each part thins to about that.
+    const tight = clothesGirth(ref, ref.joints, solidOf(Object.fromEntries(parts.map((b) => [b, 0.92]))));
+    for (const b of parts) {
+      expect(tight[b]).toBeGreaterThan(0.86);
+      expect(tight[b]).toBeLessThan(0.96);
+    }
+    // A stick-thin mannequin: every part stops at a slim adult's girth.
+    const { geometry, truth } = createMannequin({ pose: 'A', detail: 16 });
+    const human = humanJoints(ref.joints, truth);
+    const thin = clothesGirth(ref, human, voxelize({ positions: geometry.getAttribute('position').array as Float32Array, index: Uint32Array.from(geometry.index!.array), dx: 1.8 / 200 }));
+    expect(thin.spine).toBeCloseTo(0.82, 3);
+    expect(thin.chest).toBeCloseTo(0.87, 3);
+    expect(thin.leftUpperLeg).toBeCloseTo(0.85, 3);
   });
 });
