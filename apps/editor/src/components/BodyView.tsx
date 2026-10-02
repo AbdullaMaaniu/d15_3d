@@ -3,7 +3,7 @@ import { useFrame } from '@react-three/fiber';
 import { Uint32BufferAttribute, type Material, type SkinnedMesh } from 'three';
 import { coveredBodyTriangles, type GarmentSeparation } from '@rigforge/core';
 import { garmentRegions, useStore } from '../store';
-import { bodySkinColor, buildBodyMesh, loadReferenceBody, syncBodyPose, type BodyRig } from '../lib/body';
+import { bodySkinColor, buildBodyMesh, dressBody, dressedSeparation, loadReferenceBody, syncBodyPose, type BodyRig } from '../lib/body';
 import { buildGarmentMeshes, separateCharacter } from '../lib/garments';
 
 /**
@@ -75,7 +75,10 @@ export function BodyView() {
         const t0 = performance.now();
         const next = buildBodyMesh(built, joints, shape, skin, ref);
         next.mesh.userData.rfFullIndex = (next.mesh.geometry.index!.array as Uint32Array).slice();
-        useStore.setState({ bodyInfo: { triangles: next.mesh.geometry.index!.count / 3, ms: performance.now() - t0 } });
+        const g = next.mesh.geometry;
+        g.computeBoundingBox();
+        const height = g.boundingBox!.max.y - g.boundingBox!.min.y;
+        useStore.setState({ bodyInfo: { triangles: g.index!.count / 3, ms: performance.now() - t0, height, heightScale: shape.height ?? 1 } });
         syncBodyPose(next, built);
         setRig(next);
       } catch (e) {
@@ -89,6 +92,14 @@ export function BodyView() {
   }, [character, joints, shape, rigType, partsVersion]);
 
   useEffect(() => () => rig?.mesh.geometry.dispose(), [rig]);
+  // The character's clothes (its mesh, or the garments cut from it) follow the body while it's shown.
+  useEffect(() => {
+    const built = character?.built;
+    if (!rig || !built) return;
+    syncBodyPose(rig, built);
+    const undo = [built.mesh, ...(cut?.meshes ?? [])].map((m) => dressBody(rig, built, m));
+    return () => undo.forEach((u) => u());
+  }, [rig, character, cut]);
   // After the character's animation has posed its bones this frame.
   useFrame(() => {
     const built = character?.built;
@@ -104,10 +115,11 @@ export function BodyView() {
     let hidden = 0;
     if (cut && garments.hideCovered) {
       const g = mesh.geometry;
+      const dressed = dressedSeparation(rig!, cut.sep);
       const covered = coveredBodyTriangles(
         { positions: g.attributes.position.array as Float32Array, normals: g.attributes.normal.array as Float32Array, index: full },
-        cut.sep.pieces,
-        { headCut: cut.sep.headCut },
+        dressed.pieces,
+        { headCut: dressed.headCut },
       );
       const kept: number[] = [];
       for (let t = 0; t < covered.length; t++) {

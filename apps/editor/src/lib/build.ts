@@ -1,8 +1,8 @@
 import { coveredBodyTriangles, exportCharacter, type ExportResult, type Follower } from '@rigforge/core';
 import type { ControllerSetup } from '@rigforge/three';
-import { Uint32BufferAttribute, type Object3D, type SkinnedMesh } from 'three';
+import { Uint32BufferAttribute, type Material, type Object3D, type SkinnedMesh } from 'three';
 import { suggestController, useStore } from '../store';
-import { exportBodyRig } from './body';
+import { dressBody, dressedSeparation, exportBodyRig } from './body';
 import { garmentsForExport } from './garments';
 
 interface ExportParts {
@@ -12,38 +12,68 @@ interface ExportParts {
   followers: Follower[];
   /** Left out of the file: the character's mesh, when the garments and body replace it. */
   omit: Object3D[];
+  /** Puts back what exporting changed on the character (its mesh dressed on the body). */
+  undo: () => void;
 }
 
 /**
- * What goes into the GLB beside the rig. With the clothes separated (Body
- * step), the garments and the body replace the character's mesh, and the body
- * leaves out its triangles under the clothes; without the body, the mesh is
- * exported as it is, since the garments alone have holes where the skin was.
+ * What goes into the GLB beside the rig. With the body, the clothes are bound
+ * to its skeleton as in the Body step. With the clothes separated, the garments
+ * and the body replace the character's mesh, and the body leaves out its
+ * triangles under the clothes. Without the body, the mesh is exported as it
+ * is, since the garments alone have holes where the skin was.
  */
 async function exportParts(): Promise<ExportParts> {
-  const out: ExportParts = { layers: [], followers: [], omit: [] };
+  const out: ExportParts = { layers: [], followers: [], omit: [], undo: () => {} };
   const rig = await exportBodyRig();
-  if (!rig) return out;
+  const built = useStore.getState().character?.built;
+  if (!rig || !built) return out;
   rig.root.name = 'Body';
   rig.mesh.name = 'BodyMesh';
   out.followers.push({ root: rig.root, links: rig.links.map(({ bone, source }) => ({ bone, source })), stride: rig.stride });
+  // The clothes follow the body's skeleton, as in the Body step, so they stay on its limbs.
   const garments = garmentsForExport();
-  if (!garments?.meshes.length) return out;
+  if (!garments?.meshes.length) {
+    out.undo = dressBody(rig, built);
+    return out;
+  }
+  for (const m of garments.meshes) {
+    dressBody(rig, built, m);
+    keepPartMaterials(built.mesh, m);
+  }
   out.layers.push(...garments.meshes);
-  out.omit.push(useStore.getState().character!.built!.mesh);
+  out.omit.push(built.mesh);
   if (useStore.getState().garments.hideCovered) {
     const g = rig.mesh.geometry;
     const full = g.index!.array as Uint32Array;
+    const dressed = dressedSeparation(rig, garments.separation);
     const covered = coveredBodyTriangles(
       { positions: g.attributes.position.array as Float32Array, normals: g.attributes.normal.array as Float32Array, index: full },
-      garments.separation.pieces,
-      { headCut: garments.separation.headCut },
+      dressed.pieces,
+      { headCut: dressed.headCut },
     );
     const kept: number[] = [];
     for (let t = 0; t < covered.length; t++) if (!covered[t]) kept.push(full[t * 3], full[t * 3 + 1], full[t * 3 + 2]);
     g.setIndex(new Uint32BufferAttribute(Uint32Array.from(kept), 1));
   }
   return out;
+}
+
+/**
+ * A garment cut along a part keeps that part's named, tagged material (as on
+ * the character's mesh), so the runtime can still recolour it.
+ */
+function keepPartMaterials(character: SkinnedMesh, garment: SkinnedMesh): void {
+  const region = (garment.userData.rfGarment as { region?: number } | undefined)?.region;
+  const partMats = character.userData.rfRegionMats as Map<string, Material> | undefined;
+  if (region === undefined || !partMats || !Array.isArray(garment.material)) return;
+  garment.material = garment.material.map((mat, m) => {
+    const part = partMats.get(`${region}:${m}`);
+    if (!part) return mat;
+    const c = part.clone();
+    c.side = mat.side;
+    return c;
+  });
 }
 
 /** The controller roles to export: the user's edits if still valid, else the suggestion. */
@@ -83,12 +113,13 @@ export async function buildGlb(onProgress?: (stage: string) => void): Promise<Ex
       return clip;
     });
     onProgress?.('Fitting the body');
-    const { layers, followers, omit } = await exportParts();
+    const { layers, followers, omit, undo } = await exportParts();
     try {
       const res = await exportCharacter(character.root, baked, { preset: exportPreset, onProgress, layers, followers, omit });
       set('exportResult', res);
       return res;
     } finally {
+      undo();
       for (const l of layers) l.geometry.dispose();
       for (const f of followers) f.root.traverse((o) => (o as SkinnedMesh).isSkinnedMesh && (o as SkinnedMesh).geometry.dispose());
     }

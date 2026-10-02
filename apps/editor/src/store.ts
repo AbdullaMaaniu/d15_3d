@@ -262,7 +262,8 @@ interface State {
 
   /** Shape of the generated body (Body step); multipliers per control. */
   bodyShape: BodyShape;
-  bodyInfo: { triangles: number; ms: number } | null;
+  /** The body as last built: triangles, build time, standing height (m) and the height control it was built at. */
+  bodyInfo: { triangles: number; ms: number; height?: number; heightScale?: number } | null;
   /** Garment separation in the Body step. */
   garments: GarmentSettings;
   garmentInfo: GarmentInfo | null;
