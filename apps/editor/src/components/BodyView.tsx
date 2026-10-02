@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { partsSummary, useStore } from '../store';
-import { buildBodyMesh, loadReferenceBody, syncBodyPose, type BodyRig } from '../lib/body';
+import { buildBodyMesh, dressBody, loadReferenceBody, syncBodyPose, type BodyRig } from '../lib/body';
 
 const DEFAULT_SKIN = '#d9a07a';
 
@@ -31,7 +31,10 @@ export function BodyView() {
       try {
         const t0 = performance.now();
         const next = buildBodyMesh(built, joints, shape, skin, ref);
-        useStore.setState({ bodyInfo: { triangles: next.mesh.geometry.index!.count / 3, ms: performance.now() - t0 } });
+        const g = next.mesh.geometry;
+        g.computeBoundingBox();
+        const height = g.boundingBox!.max.y - g.boundingBox!.min.y;
+        useStore.setState({ bodyInfo: { triangles: g.index!.count / 3, ms: performance.now() - t0, height, heightScale: shape.height ?? 1 } });
         syncBodyPose(next, built);
         setRig(next);
       } catch (e) {
@@ -45,6 +48,13 @@ export function BodyView() {
   }, [character, joints, shape, rigType, partsVersion]);
 
   useEffect(() => () => rig?.mesh.geometry.dispose(), [rig]);
+  // The character's clothes follow the body while it's shown.
+  useEffect(() => {
+    const built = character?.built;
+    if (!rig || !built) return;
+    syncBodyPose(rig, built);
+    return dressBody(rig, built);
+  }, [rig, character]);
   // After the character's animation has posed its bones this frame.
   useFrame(() => {
     const built = character?.built;
