@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
+import { useFrame } from '@react-three/fiber';
 import { Uint32BufferAttribute, type Material, type SkinnedMesh } from 'three';
 import { coveredBodyTriangles, type GarmentSeparation } from '@rigforge/core';
 import { garmentRegions, useStore } from '../store';
-import { buildBodyMesh, loadReferenceBody } from '../lib/body';
+import { buildBodyMesh, loadReferenceBody, syncBodyPose, type BodyRig } from '../lib/body';
 import { buildGarmentMeshes, separateCharacter } from '../lib/garments';
 
 const DEFAULT_SKIN = '#d9a07a';
 
 /**
- * The generated body inside the character, regenerated shortly after the shape
- * changes, and the clothes cut from the character's mesh around it.
+ * The body, following the character's pose, regenerated shortly after the
+ * shape changes, and the clothes cut from the character's mesh around it.
  */
 export function BodyView() {
   const character = useStore((s) => s.character);
@@ -19,7 +20,7 @@ export function BodyView() {
   const partsVersion = useStore((s) => s.partsVersion);
   const garments = useStore((s) => s.garments);
   const shading = useStore((s) => s.shading);
-  const [mesh, setMesh] = useState<SkinnedMesh | null>(null);
+  const [rig, setRig] = useState<BodyRig | null>(null);
   const [cut, setCut] = useState<{ sep: GarmentSeparation; meshes: SkinnedMesh[] } | null>(null);
 
   // The clothes, cut from the character's mesh.
@@ -64,7 +65,7 @@ export function BodyView() {
   useEffect(() => {
     const built = character?.built;
     if (!built || !joints || rigType !== 'humanoid') {
-      setMesh(null);
+      setRig(null);
       return;
     }
     let cancelled = false;
@@ -75,12 +76,10 @@ export function BodyView() {
       try {
         const t0 = performance.now();
         const next = buildBodyMesh(built, joints, shape, skin, ref);
-        next.userData.rfFullIndex = (next.geometry.index!.array as Uint32Array).slice();
-        useStore.setState({ bodyInfo: { triangles: next.geometry.index!.count / 3, ms: performance.now() - t0 } });
-        setMesh((prev) => {
-          prev?.geometry.dispose();
-          return next;
-        });
+        next.mesh.userData.rfFullIndex = (next.mesh.geometry.index!.array as Uint32Array).slice();
+        useStore.setState({ bodyInfo: { triangles: next.mesh.geometry.index!.count / 3, ms: performance.now() - t0 } });
+        syncBodyPose(next, built);
+        setRig(next);
       } catch (e) {
         console.warn('[rigforge] body generation failed', e);
       }
@@ -91,16 +90,16 @@ export function BodyView() {
     };
   }, [character, joints, shape, rigType, partsVersion]);
 
-  useEffect(() => () => mesh?.geometry.dispose(), [mesh]);
+  useEffect(() => () => rig?.mesh.geometry.dispose(), [rig]);
 
-  // Leave out the body where the clothes cover it.
+  // Leave out the body where the clothes cover it (both at rest, in rig space).
   useEffect(() => {
-    if (!mesh) return;
-    const full = mesh.userData.rfFullIndex as Uint32Array;
+    if (!rig) return;
+    const g = rig.mesh.geometry;
+    const full = rig.mesh.userData.rfFullIndex as Uint32Array;
     let index = full;
     let hidden = 0;
     if (cut && garments.hideCovered) {
-      const g = mesh.geometry;
       const covered = coveredBodyTriangles(
         { positions: g.attributes.position.array as Float32Array, normals: g.attributes.normal.array as Float32Array, index: full },
         cut.sep.pieces,
@@ -113,17 +112,19 @@ export function BodyView() {
       }
       index = Uint32Array.from(kept);
     }
-    mesh.geometry.setIndex(new Uint32BufferAttribute(index, 1));
+    g.setIndex(new Uint32BufferAttribute(index, 1));
     const info = useStore.getState().garmentInfo;
     if (info) useStore.setState({ garmentInfo: { ...info, hiddenBody: hidden } });
-  }, [mesh, cut, garments.hideCovered]);
+  }, [rig, cut, garments.hideCovered]);
 
-  // The cut clothes replace the character's mesh; see-through like it in x-ray.
+  // The cut clothes replace the character's mesh, beside it under the character's root; see-through like it in x-ray.
   useEffect(() => {
     const built = character?.built;
     if (!built || !cut) return;
     built.mesh.visible = false;
+    built.root.add(...cut.meshes);
     return () => {
+      built.root.remove(...cut.meshes);
       built.mesh.visible = true;
     };
   }, [character, cut]);
@@ -139,10 +140,14 @@ export function BodyView() {
     }
   }, [cut, shading]);
 
+  // After the character's animation has posed its bones this frame.
+  useFrame(() => {
+    const built = character?.built;
+    if (rig && built) syncBodyPose(rig, built);
+  });
   return (
     <>
-      {mesh && <primitive object={mesh} />}
-      {cut?.meshes.map((m) => <primitive key={m.uuid} object={m} />)}
+      {rig && <primitive object={rig.root} />}
     </>
   );
 }

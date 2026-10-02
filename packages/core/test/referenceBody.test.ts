@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createMannequin } from '../src/mesh/mannequin';
-import { decodeReferenceBody, encodeReferenceBody, fitReferenceBody, insideSlim } from '../src/body/reference';
-import { tsKernels } from '../src/kernels';
+import { clothesGirth, decodeReferenceBody, encodeReferenceBody, fitReferenceBody } from '../src/body/reference';
+import { voxelizeTS as voxelize } from '../src/voxel/voxelize';
+import { humanJoints } from '../src/body/proportions';
 
 const ref = decodeReferenceBody(readFileSync(new URL('../assets/reference-body.bin', import.meta.url)));
 
@@ -29,11 +30,19 @@ describe('reference body', () => {
     expect(again.bones).toEqual(ref.bones);
   });
 
-  it('fitted to its own skeleton, stays as it is', () => {
+  it('fitted to its own skeleton, only takes the average build', () => {
     const body = fitReferenceBody(ref, ref.joints);
-    let worst = 0;
-    for (let i = 0; i < body.positions.length; i++) worst = Math.max(worst, Math.abs(body.positions[i] - ref.positions[i]));
-    expect(worst).toBeLessThan(1e-4);
+    const J = ref.joints.joints;
+    let worst = 0, head = 0;
+    for (let v = 0; v < body.positions.length / 3; v++) {
+      const d = Math.hypot(...[0, 1, 2].map((i) => body.positions[v * 3 + i] - ref.positions[v * 3 + i]));
+      worst = Math.max(worst, d);
+      // The head is left as it is (the fuller neck reaches a few millimetres into it).
+      if (ref.positions[v * 3 + 1] > J.head[1] + 0.03) head = Math.max(head, d);
+    }
+    expect(worst).toBeGreaterThan(0.01); // a fuller waist
+    expect(worst).toBeLessThan(0.06);
+    expect(head).toBeLessThan(0.005);
   });
 
   it("takes another rig's proportions and stays weighted to it", () => {
@@ -76,28 +85,46 @@ describe('reference body', () => {
     expect(moved([-1, 0, -1], [1, J.leftLowerLeg[1], 1])).toBeLessThan(1e-6);
   });
 
-  it('slims to sit inside a thinner character, and not at all inside itself', () => {
-    const self = tsKernels.voxelize({ positions: ref.positions, index: ref.index, dx: 1.8 / 200 });
-    expect(insideSlim(ref, ref.joints, self)).toBe(1);
+  it('gives a stylised rig an average human skeleton in its own pose', () => {
+    const { truth } = createMannequin({ pose: 'A' });
+    const human = humanJoints(ref.joints, truth);
+    const R = ref.joints.joints, H = human.joints, T = truth.joints;
+    const dist = (m: Record<string, number[]>, a: string, b: string) => Math.hypot(...[0, 1, 2].map((i) => m[b][i] - m[a][i]));
+    const stand = (m: Record<string, number[]>) => m.head[1] - (m.leftFoot[1] + m.rightFoot[1]) / 2;
+    const size = stand(T) / stand(R);
+    expect(stand(H)).toBeCloseTo(stand(T), 1);
+    for (const [a, b] of [['leftUpperLeg', 'leftLowerLeg'], ['leftLowerLeg', 'leftFoot'], ['leftUpperArm', 'leftLowerArm'], ['leftLowerArm', 'leftHand'], ['hips', 'leftUpperLeg']]) {
+      // Human lengths at the rig's height...
+      expect(dist(H, a, b)).toBeCloseTo(dist(R, a, b) * size, 4);
+      // ...along the rig's own bones, so its animation copies across.
+      const d = [0, 1, 2].map((i) => (H[b][i] - H[a][i]) / dist(H, a, b)), t = [0, 1, 2].map((i) => (T[b][i] - T[a][i]) / dist(T, a, b));
+      expect(d[0] * t[0] + d[1] * t[1] + d[2] * t[2]).toBeGreaterThan(0.9999);
+    }
+    // Standing on the rig's ground.
+    const low = (m: { joints: Record<string, number[]>; tails: Record<string, number[]> }) => Math.min(...[...Object.values(m.joints), ...Object.values(m.tails)].map((p) => p[1]));
+    expect(low(human)).toBeCloseTo(low(truth), 4);
+  });
 
-    const { geometry, truth } = createMannequin({ pose: 'A' });
-    const pos = geometry.getAttribute('position').array as Float32Array;
-    const solid = tsKernels.voxelize({ positions: pos, index: Uint32Array.from(geometry.index!.array), dx: 1.8 / 200 });
-    const slim = insideSlim(ref, truth, solid);
-    expect(slim).toBeLessThan(1);
-    expect(slim).toBeGreaterThanOrEqual(0.85);
-    // More of the body ends up inside the mannequin (hands and shoulders are bigger than its stubs).
-    const insideShare = (b: { positions: Float32Array }) => {
-      let n = 0;
-      for (let v = 0; v < b.positions.length / 3; v++) {
-        const [x, y, z] = [0, 1, 2].map((i) => Math.floor((b.positions[v * 3 + i] - solid.origin[i]) / solid.dx));
-        if (x >= 0 && y >= 0 && z >= 0 && x < solid.nx && y < solid.ny && z < solid.nz && solid.data[x + solid.nx * (y + solid.ny * z)]) n++;
-      }
-      return n / (b.positions.length / 3);
+  it('thins each part to fit inside clothes, but no thinner than a slim adult', () => {
+    const parts = ['hips', 'spine', 'chest', 'upperChest', 'leftUpperArm', 'leftLowerArm', 'leftUpperLeg', 'leftLowerLeg'];
+    const solidOf = (girth: Record<string, number>) => {
+      const b = fitReferenceBody(ref, ref.joints, {}, { girth });
+      return voxelize({ positions: b.positions, index: b.index, dx: 1.8 / 300 });
     };
-    const before = insideShare(fitReferenceBody(ref, truth));
-    const after = insideShare(fitReferenceBody(ref, truth, {}, slim));
-    console.log('inside the mannequin', before.toFixed(2), '->', after.toFixed(2));
-    expect(after).toBeGreaterThan(before);
+    // Clothes that fit the body as it is: nothing to do.
+    expect(clothesGirth(ref, ref.joints, solidOf({}))).toEqual({});
+    // Clothes 8% tighter all round: each part thins to about that.
+    const tight = clothesGirth(ref, ref.joints, solidOf(Object.fromEntries(parts.map((b) => [b, 0.92]))));
+    for (const b of parts) {
+      expect(tight[b]).toBeGreaterThan(0.86);
+      expect(tight[b]).toBeLessThan(0.96);
+    }
+    // A stick-thin mannequin: every part stops at a slim adult's girth.
+    const { geometry, truth } = createMannequin({ pose: 'A', detail: 16 });
+    const human = humanJoints(ref.joints, truth);
+    const thin = clothesGirth(ref, human, voxelize({ positions: geometry.getAttribute('position').array as Float32Array, index: Uint32Array.from(geometry.index!.array), dx: 1.8 / 200 }));
+    expect(thin.spine).toBeCloseTo(0.82, 3);
+    expect(thin.chest).toBeCloseTo(0.87, 3);
+    expect(thin.leftUpperLeg).toBeCloseTo(0.85, 3);
   });
 });

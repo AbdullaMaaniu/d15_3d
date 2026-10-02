@@ -14,7 +14,16 @@ import type { JointMap } from '../skeleton';
  */
 
 export type BodyControl =
+  | 'height'
   | 'overall'
+  | 'torsoLength'
+  | 'neckLength'
+  | 'shoulderWidth'
+  | 'hipWidth'
+  | 'armLength'
+  | 'handLength'
+  | 'legLength'
+  | 'footLength'
   | 'head'
   | 'neck'
   | 'shoulders'
@@ -41,30 +50,41 @@ export type BodyShape = Partial<Record<BodyControl, number>>;
 export interface BodyControlDef {
   id: BodyControl;
   label: string;
-  group: 'Overall' | 'Head & neck' | 'Torso' | 'Arms' | 'Legs';
+  group: 'Size' | 'Proportions' | 'Head & neck' | 'Torso' | 'Arms' | 'Legs';
+  /** Slider range; 1 is the default. */
+  range: [number, number];
 }
 
 export const BODY_CONTROLS: BodyControlDef[] = [
-  { id: 'overall', label: 'Overall thickness', group: 'Overall' },
-  { id: 'head', label: 'Head', group: 'Head & neck' },
-  { id: 'neck', label: 'Neck', group: 'Head & neck' },
-  { id: 'shoulders', label: 'Shoulders', group: 'Torso' },
-  { id: 'chest', label: 'Chest', group: 'Torso' },
-  { id: 'back', label: 'Back', group: 'Torso' },
-  { id: 'waist', label: 'Waist', group: 'Torso' },
-  { id: 'belly', label: 'Belly', group: 'Torso' },
-  { id: 'hips', label: 'Hips', group: 'Torso' },
-  { id: 'glutes', label: 'Glutes', group: 'Torso' },
-  { id: 'deltoids', label: 'Deltoids', group: 'Arms' },
-  { id: 'biceps', label: 'Biceps', group: 'Arms' },
-  { id: 'triceps', label: 'Triceps', group: 'Arms' },
-  { id: 'elbows', label: 'Elbows', group: 'Arms' },
-  { id: 'forearms', label: 'Forearms', group: 'Arms' },
-  { id: 'wrists', label: 'Wrists', group: 'Arms' },
-  { id: 'thighs', label: 'Thighs', group: 'Legs' },
-  { id: 'knees', label: 'Knees', group: 'Legs' },
-  { id: 'calves', label: 'Calves', group: 'Legs' },
-  { id: 'ankles', label: 'Ankles', group: 'Legs' },
+  { id: 'height', label: 'Height', group: 'Size', range: [0.8, 1.2] },
+  { id: 'overall', label: 'Weight', group: 'Size', range: [0.7, 1.6] },
+  { id: 'torsoLength', label: 'Torso length', group: 'Proportions', range: [0.8, 1.25] },
+  { id: 'neckLength', label: 'Neck length', group: 'Proportions', range: [0.6, 1.5] },
+  { id: 'shoulderWidth', label: 'Shoulder width', group: 'Proportions', range: [0.8, 1.25] },
+  { id: 'hipWidth', label: 'Hip width', group: 'Proportions', range: [0.8, 1.3] },
+  { id: 'armLength', label: 'Arm length', group: 'Proportions', range: [0.8, 1.25] },
+  { id: 'handLength', label: 'Hand length', group: 'Proportions', range: [0.75, 1.3] },
+  { id: 'legLength', label: 'Leg length', group: 'Proportions', range: [0.8, 1.25] },
+  { id: 'footLength', label: 'Foot length', group: 'Proportions', range: [0.75, 1.3] },
+  { id: 'head', label: 'Head size', group: 'Head & neck', range: [0.8, 1.25] },
+  { id: 'neck', label: 'Neck', group: 'Head & neck', range: [0.6, 1.8] },
+  { id: 'shoulders', label: 'Shoulders', group: 'Torso', range: [0.5, 1.8] },
+  { id: 'chest', label: 'Chest', group: 'Torso', range: [0.5, 1.8] },
+  { id: 'back', label: 'Back', group: 'Torso', range: [0.5, 1.8] },
+  { id: 'waist', label: 'Waist', group: 'Torso', range: [0.5, 1.8] },
+  { id: 'belly', label: 'Belly', group: 'Torso', range: [0.5, 1.8] },
+  { id: 'hips', label: 'Hips', group: 'Torso', range: [0.5, 1.8] },
+  { id: 'glutes', label: 'Glutes', group: 'Torso', range: [0.5, 1.8] },
+  { id: 'deltoids', label: 'Deltoids', group: 'Arms', range: [0.5, 1.8] },
+  { id: 'biceps', label: 'Biceps', group: 'Arms', range: [0.5, 1.8] },
+  { id: 'triceps', label: 'Triceps', group: 'Arms', range: [0.5, 1.8] },
+  { id: 'elbows', label: 'Elbows', group: 'Arms', range: [0.5, 1.8] },
+  { id: 'forearms', label: 'Forearms', group: 'Arms', range: [0.5, 1.8] },
+  { id: 'wrists', label: 'Wrists', group: 'Arms', range: [0.5, 1.8] },
+  { id: 'thighs', label: 'Thighs', group: 'Legs', range: [0.5, 1.8] },
+  { id: 'knees', label: 'Knees', group: 'Legs', range: [0.5, 1.8] },
+  { id: 'calves', label: 'Calves', group: 'Legs', range: [0.5, 1.8] },
+  { id: 'ankles', label: 'Ankles', group: 'Legs', range: [0.5, 1.8] },
 ];
 
 type V3 = [number, number, number];

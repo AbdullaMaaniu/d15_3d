@@ -1,4 +1,4 @@
-import { BufferGeometry, DoubleSide, Float32BufferAttribute, Matrix4, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute, type Material } from 'three';
+import { BufferGeometry, DoubleSide, Float32BufferAttribute, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute, type Material } from 'three';
 import { separateGarments, type GarmentOptions, type GarmentSeparation, type JointMap, type RegionSet, type RiggedCharacter } from '@rigforge/core';
 import { garmentRegions, useStore } from '../store';
 
@@ -44,7 +44,8 @@ export function separateCharacter(built: RiggedCharacter, joints: JointMap | nul
 }
 
 /**
- * Each garment as a skinned mesh on the character's skeleton, with the
+ * Each garment as a skinned mesh on the character's skeleton (to add under
+ * the character's root, beside its own mesh), with the
  * character's own materials (double-sided: a garment is a single surface, so
  * its inside shows at the openings). Vertex colours are carried over through
  * the pieces' source vertices.
@@ -85,7 +86,8 @@ export function buildGarmentMeshes(built: RiggedCharacter, sep: GarmentSeparatio
     mesh.name = p.name;
     mesh.frustumCulled = false;
     mesh.userData.rfGarment = { kind: p.kind, region: p.region };
-    mesh.bind(built.skeleton, new Matrix4());
+    // Bound like the character's own mesh, to go beside it under the character's root.
+    mesh.bind(built.skeleton, built.mesh.bindMatrix);
     return mesh;
   });
 }

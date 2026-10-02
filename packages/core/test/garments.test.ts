@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { decodeReferenceBody, fitReferenceBody, insideSlim } from '../src/body/reference';
+import { clothesGirth, decodeReferenceBody, fitReferenceBody } from '../src/body/reference';
 import { createClothedSample } from '../src/body/clothedSample';
 import { coveredBodyTriangles, separateGarments, type GarmentPiece } from '../src/body/garments';
 import { autoRegionsHumanoid, regionContext, triangleBones, type RegionSet } from '../src/rig/regions';
@@ -118,7 +118,7 @@ describe('garment separation', () => {
 
   it('hides the body under the clothes but not at the openings', () => {
     const grid = tsKernels.voxelize({ positions: sample.positions, index: sample.index, dx: 1.8 / 200 });
-    const body = fitReferenceBody(ref, ref.joints, {}, insideSlim(ref, ref.joints, grid));
+    const body = fitReferenceBody(ref, ref.joints, {}, { girth: clothesGirth(ref, ref.joints, grid) });
     const hidden = coveredBodyTriangles(body, sep.pieces, { headCut: sep.headCut });
     let count = 0, bareHidden = 0, bare = 0;
     for (let t = 0; t < hidden.length; t++) {
