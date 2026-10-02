@@ -2,15 +2,13 @@ import { Bone, BufferGeometry, Float32BufferAttribute, Group, Matrix4, MeshStand
 import { clothesGirth, decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, tsKernels, PROPORTION_CONTROLS, type BodyShape, type Girth, type JointMap, type ReferenceBody } from '@rigforge/core';
 import type { RiggedCharacter } from '@rigforge/core';
 import referenceUrl from '@rigforge/core/assets/reference-body.bin?url';
-import { partsSummary, useStore } from '../store';
+import { garmentRegions, useStore } from '../store';
 
 const DEFAULT_SKIN = '#d9a07a';
 
-/** Skin colour from the Parts step, when it has a Skin part. */
+/** Skin colour from the character's Skin part (from the Parts step, or found automatically). */
 export function bodySkinColor(): string {
-  const parts = useStore.getState().parts;
-  const skinIndex = parts?.defs.findIndex((d) => d.name.toLowerCase() === 'skin') ?? -1;
-  return (skinIndex >= 0 && partsSummary()?.baseColors[skinIndex]) || DEFAULT_SKIN;
+  return garmentRegions()?.skinColor ?? DEFAULT_SKIN;
 }
 
 /**

@@ -22,7 +22,7 @@ import {
   type CreatureBone,
   splitParts,
 } from '@rigforge/core';
-import { ALL_STEPS, accessoryDefs, type ClipEntry, type RigType, type useStore } from '../store';
+import { ALL_STEPS, DEFAULT_GARMENTS, accessoryDefs, type ClipEntry, type GarmentSettings, type RigType, type useStore } from '../store';
 import type { BodyShape, RegionDef } from '@rigforge/core';
 import type { ControllerSetup, SpringConfig } from '@rigforge/three';
 
@@ -60,6 +60,8 @@ interface ProjectFile {
   parts?: { defs: RegionDef[]; faces: string; tints: Array<string | null> } | null;
   /** Generated body shape (Body step). */
   bodyShape?: BodyShape;
+  /** Garment separation settings (Body step). */
+  garments?: GarmentSettings;
   /** Whether the prop rig was built (props don't store weights: they're rigid). */
   propBuilt?: boolean;
 }
@@ -121,6 +123,7 @@ export async function saveProject(s: StoreState): Promise<Blob> {
     controller: s.controller,
     parts: s.parts ? { defs: s.parts.defs, faces: b64.encode(s.parts.faces), tints: s.parts.tints } : null,
     bodyShape: s.bodyShape,
+    garments: s.garments,
     armSpacing: s.armSpacing,
     propBuilt: s.rigType === 'prop' && !!built,
     rig: built && s.rigType !== 'prop' && s.joints
@@ -214,6 +217,7 @@ export async function loadProject(blob: Blob, bake: (entry: Omit<ClipEntry, 'bak
     // Re-applied to the mesh once the character is in the store.
     parts: file.parts ? { defs: file.parts.defs, faces: b64.decode(file.parts.faces), tints: file.parts.tints } : null,
     bodyShape: file.bodyShape ?? {},
+    garments: { ...DEFAULT_GARMENTS, ...file.garments },
     controller: file.controller ?? null,
   });
   const baseDefs = (defs: readonly import('@rigforge/core').BoneDef[]) => [...defs, ...accessoryDefs(file.extraBones ?? [])];

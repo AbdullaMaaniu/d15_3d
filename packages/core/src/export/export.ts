@@ -26,6 +26,8 @@ export interface ExportOptions {
   layers?: SkinnedMesh[];
   /** Second skeletons that copy the character's pose bone for bone, such as the generated body. */
   followers?: Follower[];
+  /** Objects under the root left out of the file, such as the character's mesh when separated garments replace it. */
+  omit?: Object3D[];
 }
 
 /**
@@ -119,9 +121,9 @@ function withFollowerTracks(clip: AnimationClip, followers: Follower[]): Animati
   return out;
 }
 
-/** Runs `fn` with each layer parented beside the root's skinned mesh, sharing its bind space. */
-async function withLayers<T>(root: Object3D, layers: Object3D[], fn: () => Promise<T>): Promise<T> {
-  if (!layers.length) return fn();
+/** Runs `fn` with each layer parented beside the root's skinned mesh, sharing its bind space, and without the omitted objects. */
+async function withLayers<T>(root: Object3D, layers: Object3D[], omit: Object3D[], fn: () => Promise<T>): Promise<T> {
+  if (!layers.length && !omit.length) return fn();
   let host: SkinnedMesh | null = null;
   root.traverse((o) => {
     if (!host && (o as SkinnedMesh).isSkinnedMesh && !layers.includes(o as SkinnedMesh)) host = o as SkinnedMesh;
@@ -133,10 +135,16 @@ async function withLayers<T>(root: Object3D, layers: Object3D[], fn: () => Promi
     if (host && skinned(l)) l.bind(l.skeleton, (host as SkinnedMesh).bindMatrix);
     parent.add(l);
   }
+  const removed = omit.filter((o) => o.parent).map((o) => ({ o, parent: o.parent!, at: o.parent!.children.indexOf(o) }));
+  for (const { o } of removed) o.removeFromParent();
   root.updateMatrixWorld(true);
   try {
     return await fn();
   } finally {
+    for (const { o, parent: p, at } of removed.reverse()) {
+      p.children.splice(at, 0, o);
+      o.parent = p;
+    }
     for (const { layer, parent: was, bind } of saved) {
       if (was) was.add(layer);
       else layer.removeFromParent();
@@ -184,7 +192,7 @@ export async function exportCharacter(root: Object3D, clips: AnimationClip[], op
   const allClips = clips.map((c) => withFollowerTracks(c, followers));
   let raw: Uint8Array;
   try {
-    raw = await withLayers(root, [...(options.layers ?? []), ...followers.map((f) => f.root)], () => toGLB(root, allClips));
+    raw = await withLayers(root, [...(options.layers ?? []), ...followers.map((f) => f.root)], options.omit ?? [], () => toGLB(root, allClips));
   } finally {
     for (const r of restore) r();
   }

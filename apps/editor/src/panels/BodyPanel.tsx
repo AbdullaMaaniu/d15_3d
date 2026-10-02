@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { BodyControl } from '@rigforge/core';
 import { useStore } from '../store';
-import { Section } from '../components/ui';
+import { Check, Notes, Section } from '../components/ui';
 
 // The first controls; the full head-to-toe set follows.
 const CONTROLS: Array<{ id: BodyControl; label: string; hint: string }> = [
@@ -11,8 +11,9 @@ const CONTROLS: Array<{ id: BodyControl; label: string; hint: string }> = [
 ];
 
 /**
- * Body step: an average adult body on the rig, the base for clothing physics.
- * The clothes are shown see-through so both are visible.
+ * Body step: an average adult body on the rig, the base for clothing physics,
+ * and the clothes cut from the character's mesh. The clothes are shown
+ * see-through so both are visible.
  */
 export function BodyPanel() {
   const character = useStore((s) => s.character);
@@ -21,6 +22,9 @@ export function BodyPanel() {
   const playing = useStore((s) => s.playing);
   const shading = useStore((s) => s.shading);
   const info = useStore((s) => s.bodyInfo);
+  const garments = useStore((s) => s.garments);
+  const garmentInfo = useStore((s) => s.garmentInfo);
+  const hasParts = useStore((s) => !!s.parts);
   const s = useStore.getState;
 
   if (!character?.built || rigType !== 'humanoid') {
@@ -40,8 +44,51 @@ export function BodyPanel() {
         <h2>Body</h2>
         <p>
           An average adult body at your character's height that moves with its rig: the base for clothing physics. Shape it with the sliders.
+          The clothes are cut from the mesh along its parts, and the bare skin is replaced by the body.
         </p>
       </div>
+      <Section title="Clothes">
+        <Check checked={garments.separate} onChange={(v) => s().setGarments({ separate: v })}>
+          Cut the clothes from the body
+        </Check>
+        {garments.separate && (
+          <>
+            {garmentInfo && (
+              <ul className="garment-list" aria-label="Garments">
+                {garmentInfo.pieces.map((p) => (
+                  <li key={p.name} className="row between">
+                    <span>{p.name}</span>
+                    <span className="muted">
+                      {p.triangles.toLocaleString()} triangles · {p.openings} opening{p.openings === 1 ? '' : 's'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <Check checked={garments.keepHead} onChange={(v) => s().setGarments({ keepHead: v })}>
+              Keep the character's own head
+            </Check>
+            <Check checked={garments.hideCovered} onChange={(v) => s().setGarments({ hideCovered: v })}>
+              Leave out the body under the clothes
+            </Check>
+            {garmentInfo && <Notes items={garmentInfo.notes} />}
+            {garmentInfo?.auto && (
+              <p className="footer-note">
+                Clothes and skin were found automatically.{' '}
+                <button
+                  className="btn small ghost"
+                  onClick={() => {
+                    if (!hasParts) s().detectParts('body');
+                    goto('parts');
+                  }}
+                >
+                  Fix them in Parts
+                </button>
+              </p>
+            )}
+          </>
+        )}
+      </Section>
       <Section title="Shape">
         {CONTROLS.map((c) => (
           <ShapeSlider key={c.id} id={c.id} label={c.label} hint={c.hint} />
@@ -57,7 +104,12 @@ export function BodyPanel() {
             {playing ? '❚❚ Pause' : '▶ Walk'}
           </button>
         </div>
-        {info && <p className="footer-note">Body: {info.triangles.toLocaleString()} triangles, generated in {Math.round(info.ms)} ms. Exported with the character.</p>}
+        {info && (
+          <p className="footer-note">
+            Body: {info.triangles.toLocaleString()} triangles, generated in {Math.round(info.ms)} ms
+            {garmentInfo && garments.hideCovered ? `, ${garmentInfo.hiddenBody.toLocaleString()} hidden under the clothes` : ''}. Exported with the character.
+          </p>
+        )}
       </Section>
       <button className="btn primary block" onClick={() => goto('animate')}>Add animations →</button>
     </>

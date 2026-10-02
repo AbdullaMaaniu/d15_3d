@@ -82,10 +82,11 @@ import {
   MAX_REGIONS,
   REGION_PALETTE,
   type RegionContext,
+  type RegionSet,
   type BodyShape,
 } from '@rigforge/core';
 import presetPack from '@rigforge/presets/clips.json';
-import { hasSkeleton, loadFiles, loadSample, loadSampleAnimal, loadSampleCreature, loadSampleProp, type LoadedFile } from './lib/loaders';
+import { hasSkeleton, loadClothedSample, loadFiles, loadSample, loadSampleAnimal, loadSampleCreature, loadSampleProp, type LoadedFile } from './lib/loaders';
 import { computeWeights, detectJoints, detectQuadrupedJoints, type SkeletonKind, type WeightSettings } from './lib/rigClient';
 import { canSave, loadProject, saveProject, writeAutosave } from './lib/project';
 import { remeshPrepared, type RemeshInfo, type RemeshSettings } from './lib/remesh';
@@ -96,6 +97,24 @@ export type Step = 'import' | 'orient' | 'rig' | 'parts' | 'body' | 'animate' | 
 export const STEPS: Step[] = ['import', 'orient', 'rig', 'parts', 'body', 'animate', 'export'];
 /** Every step unlocked (a rigged character). */
 export const ALL_STEPS = STEPS.length - 1;
+
+export interface GarmentSettings {
+  /** Show the clothes cut from the body (off: the mesh as imported). */
+  separate: boolean;
+  /** Keep the character's own head over the body's. */
+  keepHead: boolean;
+  /** Leave out the body where clothes cover it, so it can't poke through. */
+  hideCovered: boolean;
+}
+export const DEFAULT_GARMENTS: GarmentSettings = { separate: true, keepHead: true, hideCovered: true };
+export interface GarmentInfo {
+  pieces: Array<{ name: string; kind: string; triangles: number; openings: number }>;
+  /** Regions were found automatically (no Parts yet). */
+  auto: boolean;
+  notes: string[];
+  ms: number;
+  hiddenBody: number;
+}
 
 export type PartsToolMode = 'brush' | 'fill' | 'piece';
 export interface PartsTool {
@@ -244,6 +263,9 @@ interface State {
   /** Shape of the generated body (Body step); multipliers per control. */
   bodyShape: BodyShape;
   bodyInfo: { triangles: number; ms: number } | null;
+  /** Garment separation in the Body step. */
+  garments: GarmentSettings;
+  garmentInfo: GarmentInfo | null;
 
   exportName: string;
   exportPreset: 'web' | 'mobile' | 'lossless';
@@ -269,7 +291,7 @@ interface Actions {
   goto(step: Step): void;
   setError(e: string | null): void;
   loadFromFiles(files: File[]): Promise<void>;
-  loadSampleModel(pose: 'T' | 'A' | 'prop' | 'quadruped' | 'creature'): Promise<void>;
+  loadSampleModel(pose: 'T' | 'A' | 'prop' | 'quadruped' | 'creature' | 'clothed'): Promise<void>;
   rotate(axis: 'x' | 'y' | 'z', degrees: number): void;
   autoOrient(): void;
   setHeight(h: number): void;
@@ -296,6 +318,7 @@ interface Actions {
   setPartTint(i: number, color: string | null): void;
   previewPartsMotion(on: boolean): void;
   setBodyShape(patch: BodyShape): void;
+  setGarments(patch: Partial<GarmentSettings>): void;
   buildRig(): Promise<void>;
   useExistingRig(): void;
   editJoints(): void;
@@ -440,6 +463,8 @@ export const useStore = create<State & Actions>()((set, get) => ({
   hoverPart: null,
   bodyShape: {},
   bodyInfo: null,
+  garments: { ...DEFAULT_GARMENTS },
+  garmentInfo: null,
   exportName: 'character',
   exportPreset: 'web',
   exportBody: true,
@@ -496,6 +521,17 @@ export const useStore = create<State & Actions>()((set, get) => ({
       return;
     }
     set({ rigType: 'humanoid' });
+    if (pose === 'clothed') {
+      set({ busy: 'Loading sample…' });
+      try {
+        ingest(await loadClothedSample());
+      } catch (e) {
+        set({ error: (e as Error).message });
+      } finally {
+        set({ busy: null });
+      }
+      return;
+    }
     ingest(loadSample(pose));
   },
 
@@ -769,6 +805,10 @@ export const useStore = create<State & Actions>()((set, get) => ({
       else next[k as keyof BodyShape] = v;
     }
     set({ bodyShape: next });
+  },
+
+  setGarments(patch) {
+    set({ garments: { ...get().garments, ...patch } });
   },
 
   setArmSpacing(degrees) {
@@ -1389,6 +1429,35 @@ export function partsSummary(): { shares: number[]; baseColors: string[] } | nul
   return { shares: regionAreas(set, pc.ctx).map((a) => a / pc.ctx.totalArea), baseColors: regionBaseColors(set, pc.ctx) };
 }
 
+let autoGarmentRegions: { mesh: SkinnedMesh; set: RegionSet } | null = null;
+
+/**
+ * Regions for garment separation: the Parts step's, or found automatically
+ * (and not saved) when the character has no parts yet. Also the skin colour.
+ */
+export function garmentRegions(): { regions: RegionSet; auto: boolean; skinColor: string | null } | null {
+  const { parts, rigType } = useStore.getState();
+  const pc = partsContext();
+  if (!pc) return null;
+  let regions: RegionSet, auto = false;
+  if (parts && parts.faces.length === pc.ctx.triCount) regions = { defs: parts.defs, faces: parts.faces };
+  else {
+    if (rigType !== 'humanoid') return null;
+    if (autoGarmentRegions?.mesh !== pc.mesh) {
+      const mesh = pc.mesh;
+      const orig = mesh.userData.rfOriginal as { index: Uint32Array } | undefined;
+      const index = orig?.index ?? (mesh.geometry.index!.array as ArrayLike<number>);
+      const bones = triangleBones(index, mesh.geometry.attributes.skinIndex.array as ArrayLike<number>, mesh.geometry.attributes.skinWeight.array as ArrayLike<number>, mesh.skeleton.bones.map((b) => b.name));
+      autoGarmentRegions = { mesh, set: autoRegionsHumanoid(pc.ctx, bones) };
+    }
+    regions = autoGarmentRegions.set;
+    auto = true;
+  }
+  const skin = regions.defs.findIndex((d) => d.name.trim().toLowerCase() === 'skin');
+  const skinColor = skin >= 0 ? regionBaseColors(regions, pc.ctx)[skin] ?? null : null;
+  return { regions, auto, skinColor };
+}
+
 /** Puts the current parts on the character's mesh (named materials per region). */
 function applyParts() {
   const { parts, character } = useStore.getState();
@@ -1521,6 +1590,7 @@ function replacePrepared(prepared: PreparedMesh) {
   useStore.setState({
     parts: null,
     bodyShape: {},
+    garments: { ...DEFAULT_GARMENTS },
     prepared,
     report,
     normalized: null,
@@ -1591,7 +1661,7 @@ function rebakeAll() {
 useStore.subscribe((s, prev) => {
   if (!s.exportResult || s.exportResult !== prev.exportResult) return;
   if (s.character !== prev.character || s.clips !== prev.clips || s.weightsVersion !== prev.weightsVersion || s.springs !== prev.springs || s.controller !== prev.controller || s.exportPreset !== prev.exportPreset ||
-    s.exportBody !== prev.exportBody || s.bodyShape !== prev.bodyShape || s.partsVersion !== prev.partsVersion) {
+    s.exportBody !== prev.exportBody || s.bodyShape !== prev.bodyShape || s.partsVersion !== prev.partsVersion || s.garments !== prev.garments) {
     useStore.setState({ exportResult: null });
   }
 });
@@ -1602,7 +1672,7 @@ useStore.subscribe((s, prev) => {
   const changed =
     s.prepared !== prev.prepared || s.joints !== prev.joints || s.character !== prev.character || s.clips !== prev.clips ||
     s.weightsVersion !== prev.weightsVersion || s.rotation !== prev.rotation || s.height !== prev.height || s.exportName !== prev.exportName ||
-    s.partsVersion !== prev.partsVersion || s.parts !== prev.parts || s.bodyShape !== prev.bodyShape;
+    s.partsVersion !== prev.partsVersion || s.parts !== prev.parts || s.bodyShape !== prev.bodyShape || s.garments !== prev.garments;
   if (!changed || canSave(s)) return;
   if (autosaveTimer) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(async () => {

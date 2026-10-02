@@ -32,6 +32,9 @@ export function DropZone() {
         <button className="btn" onClick={() => void loadSample('A')}>
           Try a sample
         </button>
+        <button className="btn ghost" onClick={() => void loadSample('clothed')} title="A person in a T-shirt, trousers and trainers, all one mesh like a Meshy export">
+          Clothed sample
+        </button>
         <button className="btn ghost" onClick={() => void loadSample('quadruped')} title="A dog, to try animal rigging">
           Sample animal
         </button>

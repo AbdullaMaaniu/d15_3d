@@ -13,6 +13,7 @@ export function ExportPanel() {
   const result = useStore((s) => s.exportResult);
   const hasBody = useStore((s) => !!s.character?.built && s.rigType === 'humanoid');
   const exportBody = useStore((s) => s.exportBody);
+  const separate = useStore((s) => s.garments.separate);
   const set = useStore((s) => s.set);
   const [busy, setBusy] = useState<string | null>(null);
   const [tab, setTab] = useState<SnippetKind>('three');
@@ -67,7 +68,7 @@ export function ExportPanel() {
     <>
       <div>
         <h2>Export</h2>
-        <p>One GLB with the skinned mesh{hasBody && exportBody ? ', the body under the clothes' : ''}, skeleton and {clips.length} named clip{clips.length === 1 ? '' : 's'}.</p>
+        <p>One GLB with the {hasBody && exportBody ? (separate ? 'clothes as separate meshes, the body under them' : 'skinned mesh, the body under the clothes') : 'skinned mesh'}, skeleton and {clips.length} named clip{clips.length === 1 ? '' : 's'}.</p>
       </div>
       <Section title="File">
         <div className="row">
