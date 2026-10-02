@@ -16,6 +16,18 @@ export { buildSkinnedCharacter, resetPose, type RiggedCharacter } from './rig/bu
 export { generateBody, bodyParts, BODY_CONTROLS, type BodyShape, type BodyControl, type BodyControlDef, type BodyMesh } from './body/generate';
 export { fitReferenceBody, insideSlim, decodeReferenceBody, encodeReferenceBody, type ReferenceBody } from './body/reference';
 export {
+  separateGarments,
+  coveredBodyTriangles,
+  type GarmentSource,
+  type GarmentOptions,
+  type GarmentPiece,
+  type GarmentKind,
+  type GarmentSeparation,
+  type HeadCut,
+  type CoverOptions,
+} from './body/garments';
+export { createClothedSample, type ClothedSample } from './body/clothedSample';
+export {
   HUMANOID_REGIONS,
   REGION_PALETTE,
   MAX_REGIONS,
