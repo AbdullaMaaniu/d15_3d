@@ -1,5 +1,5 @@
 import { Bone, BufferGeometry, Float32BufferAttribute, Group, Matrix4, MeshStandardMaterial, Skeleton, SkinnedMesh, Uint16BufferAttribute, Uint32BufferAttribute } from 'three';
-import { decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, type BodyShape, type JointMap, type ReferenceBody } from '@rigforge/core';
+import { clothesGirth, decodeReferenceBody, fitReferenceBody, generateBody, humanJoints, proportionJoints, tsKernels, PROPORTION_CONTROLS, type BodyShape, type Girth, type JointMap, type ReferenceBody } from '@rigforge/core';
 import type { RiggedCharacter } from '@rigforge/core';
 import referenceUrl from '@rigforge/core/assets/reference-body.bin?url';
 import { partsSummary, useStore } from '../store';
@@ -38,6 +38,30 @@ export function loadReferenceBody(): Promise<ReferenceBody | null> {
   return reference;
 }
 
+const fitted = new WeakMap<RiggedCharacter, { key: string; girth: Girth }>();
+
+/**
+ * How much each part of the body is thinned to sit inside the character's
+ * clothes (its own surface), down to a slim adult at most. Measured once per
+ * rig and proportions; the girth sliders then act on top, so the user can
+ * still make the body bigger than the clothes.
+ */
+function insideClothes(built: RiggedCharacter, ref: ReferenceBody, prop: JointMap, human: JointMap, shape: BodyShape): Girth {
+  const proportions: BodyShape = {};
+  for (const k of [...PROPORTION_CONTROLS, 'head'] as const) if (shape[k] !== undefined) proportions[k] = shape[k];
+  const key = JSON.stringify(proportions);
+  const cached = fitted.get(built);
+  if (cached?.key === key) return cached.girth;
+  const g = built.mesh.geometry;
+  const positions = g.getAttribute('position').array as Float32Array;
+  g.computeBoundingBox();
+  const height = g.boundingBox!.max.y - g.boundingBox!.min.y;
+  const solid = tsKernels.voxelize({ positions, index: g.index ? Uint32Array.from(g.index.array) : null, dx: height / 200 });
+  const girth = clothesGirth(ref, prop, solid, proportions, { rest: human });
+  fitted.set(built, { key, girth });
+  return girth;
+}
+
 /** The body with its own skeleton, which follows the character's skeleton (see syncBodyPose). */
 export interface BodyRig {
   /** Holds the body's bones and mesh, in the character's rig space. */
@@ -61,7 +85,7 @@ export interface BodyRig {
 export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: BodyShape, skinColor: string, ref: ReferenceBody | null): BodyRig {
   const human = ref ? humanJoints(ref.joints, joints) : joints;
   const prop = proportionJoints(human, shape);
-  const body = ref ? fitReferenceBody(ref, prop, shape, { rest: human }) : generateBody(prop, shape);
+  const body = ref ? fitReferenceBody(ref, prop, shape, { rest: human, girth: insideClothes(built, ref, prop, human, shape) }) : generateBody(prop, shape);
   // A copy of the character's skeleton with the body's proportions. Rest
   // rotations are identity, as on the character, so poses copy across bone for bone.
   const bones: Bone[] = [];

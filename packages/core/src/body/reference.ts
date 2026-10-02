@@ -1,6 +1,7 @@
 import type { JointMap } from '../skeleton';
 import { boneDef } from '../skeleton';
 import type { BodyControl, BodyMesh, BodyShape } from './generate';
+import type { VoxelGrid } from '../voxel/grid';
 
 /**
  * A realistic human body (sculpted reference mesh, rigged once offline) fitted
@@ -207,12 +208,13 @@ function areaWeight(a: ControlArea, t: number, cf: number, cs: number): number {
 }
 
 /** Pushes the reference surface in or out around its bones for the shape controls (reference space). */
-function shapeReference(ref: ReferenceBody, shape: BodyShape): Float32Array {
+function shapeReference(ref: ReferenceBody, shape: BodyShape, girth: Girth = {}): Float32Array {
   const out = Float32Array.from(ref.positions);
   const overall = shape.overall ?? 1;
   const active = (Object.keys(CONTROL_AREAS) as BodyControl[]).filter((k) => Math.abs((shape[k] ?? 1) - 1) > 1e-6);
   const head = shape.head ?? 1;
-  if (!active.length && Math.abs(overall - 1) < 1e-6 && Math.abs(head - 1) < 1e-6) return out;
+  const thinned = ref.bones.map((b) => girth[b] ?? 1);
+  if (!active.length && Math.abs(overall - 1) < 1e-6 && Math.abs(head - 1) < 1e-6 && thinned.every((g) => g === 1)) return out;
   const frames = ref.bones.map((b) => {
     const a = ref.joints.joints[b] as V3 | undefined, e = boneEnd(ref.joints, b);
     return a && e ? { a, ...frame(a, e) } : null;
@@ -234,7 +236,7 @@ function shapeReference(ref: ReferenceBody, shape: BodyShape): Float32Array {
       const r = len(radial) || 1;
       const t = along / (fr.l || 1);
       const cf = dot(radial, fr.f) / r, cs = dot(radial, fr.s) / r;
-      let m = overall;
+      let m = overall * thinned[b];
       for (const { a, m: val } of perBone[b]) m *= 1 + (val - 1) * areaWeight(a, t, cf, cs);
       // The head grows as a whole, around its middle.
       if (b === headBone && Math.abs(head - 1) > 1e-6) {
@@ -355,7 +357,7 @@ function solveDense(A: number[][], b: number[]): number[] {
  * Fits the reference body to a humanoid rig. Bones the rig doesn't have hand
  * their vertices to the nearest parent it does have.
  */
-export function fitReferenceBody(ref: ReferenceBody, map: JointMap, shape: BodyShape = {}, options: { rest?: JointMap } = {}): BodyMesh {
+export function fitReferenceBody(ref: ReferenceBody, map: JointMap, shape: BodyShape = {}, options: { rest?: JointMap; girth?: Girth } = {}): BodyMesh {
   const R = ref.joints, J = map.joints;
   // Overall size: the rig's standing height (head joint over the feet) against
   // the reference's. With proportions applied (`map` from proportionJoints), the
@@ -422,7 +424,7 @@ export function fitReferenceBody(ref: ReferenceBody, map: JointMap, shape: BodyS
     xf.set(b, (p) => apply34(m, p));
   }
 
-  const src = shapeReference(ref, shape);
+  const src = shapeReference(ref, shape, options.girth);
   const V = src.length / 3;
   const positions = new Float32Array(V * 3);
   for (let v = 0; v < V; v++) {
@@ -438,22 +440,118 @@ export function fitReferenceBody(ref: ReferenceBody, map: JointMap, shape: BodyS
   // Weights move to the bones that own them, merged per vertex.
   const bones = [...new Set(owner)];
   const boneOf = owner.map((b) => bones.indexOf(b));
+  // The side of the chest under the armpit stays with the torso: weighted to
+  // the upper arm, it is dragged into the ribs (a caved-in armpit) whenever
+  // the arm comes down from the rest pose. The arm's weight there fades out
+  // from just outside the shoulder joint inward.
+  const armpit = (['left', 'right'] as const).map((side) => {
+    const arm = ref.bones.indexOf(`${side}UpperArm`), joint = R.joints[`${side}UpperArm`] as V3 | undefined;
+    const torsoBone = bones.indexOf(owner[ref.bones.indexOf(`${side}Shoulder`)] ?? 'upperChest');
+    return arm >= 0 && joint && torsoBone >= 0 ? { arm, joint, torsoBone, out: side === 'left' ? 1 : -1 } : null;
+  });
   const skinIndex = new Uint16Array(V * 4), skinWeight = new Float32Array(V * 4);
   for (let v = 0; v < V; v++) {
     const acc = new Map<number, number>();
     for (let k = 0; k < 4; k++) {
       const w = ref.skinWeight[v * 4 + k];
-      if (w > 0) {
-        const b = boneOf[ref.skinIndex[v * 4 + k]];
-        acc.set(b, (acc.get(b) ?? 0) + w);
+      if (w <= 0) continue;
+      const src = ref.skinIndex[v * 4 + k];
+      const a = armpit.find((x) => x?.arm === src);
+      let keep = w;
+      if (a) {
+        const lateral = (ref.positions[v * 3] - a.joint[0]) * a.out, below = a.joint[1] - ref.positions[v * 3 + 1];
+        keep = w * Math.max(smooth(-0.02, 0.05, lateral), 1 - smooth(0, 0.04, below));
+        if (keep < w) acc.set(a.torsoBone, (acc.get(a.torsoBone) ?? 0) + w - keep);
       }
+      const b = boneOf[src];
+      acc.set(b, (acc.get(b) ?? 0) + keep);
     }
-    [...acc].forEach(([b, w], i) => {
+    // At most four influences: drop the weakest and renormalise.
+    const top = [...acc].filter(([, w]) => w > 1e-6).sort((x, y) => y[1] - x[1]).slice(0, 4);
+    const sum = top.reduce((t, [, w]) => t + w, 0) || 1;
+    top.forEach(([b, w], i) => {
       skinIndex[v * 4 + i] = b;
-      skinWeight[v * 4 + i] = w;
+      skinWeight[v * 4 + i] = w / sum;
     });
   }
   return { positions, normals: vertexNormals(positions, ref.index), index: ref.index, skinIndex, skinWeight, bones };
+}
+
+/** Thickness per bone, around the bone (1 = as built). */
+export type Girth = Partial<Record<string, number>>;
+
+/**
+ * The slimmest each part may get to fit inside clothes: a slim adult man (5th
+ * percentile of ANSUR II girths over the mean): chest 0.87, waist 0.82,
+ * buttocks 0.88, upper arm 0.85, forearm 0.89, thigh 0.85, calf 0.88.
+ */
+const SLIMMEST: Array<[RegExp, number]> = [
+  [/^hips$/, 0.88],
+  [/^spine$/, 0.82],
+  [/^(chest|upperChest)$/, 0.87],
+  [/UpperArm/, 0.85],
+  [/LowerArm/, 0.89],
+  [/UpperLeg/, 0.85],
+  [/LowerLeg/, 0.88],
+];
+
+/**
+ * How much to thin each part of the fitted body so it sits inside the
+ * character's own surface (its clothes): per bone, the thickness at which
+ * `inside` of its vertices are within `solid`, never below a slim adult's
+ * (SLIMMEST). Parts the clothes don't cover where the body is (a sleeve on a
+ * longer arm) are left alone: thinning can't fix a part that's elsewhere.
+ * Hands, feet, head and neck are skipped (gloves, shoes and hair are roomy).
+ */
+export function clothesGirth(ref: ReferenceBody, map: JointMap, solid: VoxelGrid, shape: BodyShape = {}, options: { rest?: JointMap; inside?: number } = {}): Girth {
+  const inside = options.inside ?? 0.99;
+  const body = fitReferenceBody(ref, map, shape, options);
+  const isIn = (p: V3) => {
+    const x = Math.floor((p[0] - solid.origin[0]) / solid.dx), y = Math.floor((p[1] - solid.origin[1]) / solid.dx), z = Math.floor((p[2] - solid.origin[2]) / solid.dx);
+    return x >= 0 && y >= 0 && z >= 0 && x < solid.nx && y < solid.ny && z < solid.nz && solid.data[x + solid.nx * (y + solid.ny * z)] !== 0;
+  };
+  const floor = (b: string) => SLIMMEST.find(([re]) => re.test(b))?.[1];
+  const ratios = new Map<string, number[]>();
+  const V = body.positions.length / 3;
+  for (let v = 0; v < V; v++) {
+    // Each vertex belongs to its strongest bone; measured against that bone's axis in the fit.
+    let best = -1, bw = 0;
+    for (let k = 0; k < FIT_SLOTS; k++) {
+      const w = ref.fitWeight[v * FIT_SLOTS + k];
+      if (w > bw) {
+        bw = w;
+        best = ref.fitIndex[v * FIT_SLOTS + k];
+      }
+    }
+    const name = ref.bones[best];
+    if (!name || floor(name) === undefined) continue;
+    const a = map.joints[name] as V3 | undefined, e = boneEnd(map, name);
+    if (!a || !e) continue;
+    const p: V3 = [body.positions[v * 3], body.positions[v * 3 + 1], body.positions[v * 3 + 2]];
+    const u = norm(sub(e, a));
+    const c = add(a, scale(u, Math.min(Math.max(dot(sub(p, a), u), 0), len(sub(e, a)))));
+    const radial = sub(p, c);
+    let r = 1;
+    if (!isIn(p)) {
+      r = 0;
+      for (let s = 0.97; s >= 0.45; s -= 0.01) {
+        if (isIn(add(c, scale(radial, s)))) {
+          r = s;
+          break;
+        }
+      }
+      if (!r) continue;
+    }
+    if (!ratios.has(name)) ratios.set(name, []);
+    ratios.get(name)!.push(r);
+  }
+  const out: Girth = {};
+  for (const [b, rs] of ratios) {
+    rs.sort((x, y) => x - y);
+    const q = rs[Math.floor((1 - inside) * (rs.length - 1))];
+    if (q < 1) out[b] = Math.max(floor(b)!, q);
+  }
+  return out;
 }
 
 function vertexNormals(p: Float32Array, index: Uint32Array): Float32Array {
