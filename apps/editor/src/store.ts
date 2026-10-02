@@ -247,6 +247,8 @@ interface State {
 
   exportName: string;
   exportPreset: 'web' | 'mobile' | 'lossless';
+  /** Write the Body step's body into the GLB, under the clothes. */
+  exportBody: boolean;
   exportResult: ExportResult | null;
   /** GLB being driven in the test drive (null = editor view). */
   testDrive: Uint8Array | null;
@@ -440,6 +442,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
   bodyInfo: null,
   exportName: 'character',
   exportPreset: 'web',
+  exportBody: true,
   exportResult: null,
   testDrive: null,
   remeshSettings: { target: null, topology: 'quads', textureSize: 2048 },
@@ -1587,7 +1590,8 @@ function rebakeAll() {
 // A built GLB goes stale when the rig, clips or exported extras change.
 useStore.subscribe((s, prev) => {
   if (!s.exportResult || s.exportResult !== prev.exportResult) return;
-  if (s.character !== prev.character || s.clips !== prev.clips || s.weightsVersion !== prev.weightsVersion || s.springs !== prev.springs || s.controller !== prev.controller || s.exportPreset !== prev.exportPreset) {
+  if (s.character !== prev.character || s.clips !== prev.clips || s.weightsVersion !== prev.weightsVersion || s.springs !== prev.springs || s.controller !== prev.controller || s.exportPreset !== prev.exportPreset ||
+    s.exportBody !== prev.exportBody || s.bodyShape !== prev.bodyShape || s.partsVersion !== prev.partsVersion) {
     useStore.setState({ exportResult: null });
   }
 });

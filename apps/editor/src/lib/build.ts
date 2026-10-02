@@ -1,6 +1,17 @@
 import { exportCharacter, type ExportResult } from '@rigforge/core';
 import type { ControllerSetup } from '@rigforge/three';
+import type { SkinnedMesh } from 'three';
 import { suggestController, useStore } from '../store';
+import { exportBodyMesh } from './body';
+
+/**
+ * Meshes exported beside the character's own, skinned to its skeleton: the
+ * generated body. Separated garments join this list once they exist.
+ */
+async function exportLayers(): Promise<SkinnedMesh[]> {
+  const body = await exportBodyMesh();
+  return body ? [body] : [];
+}
 
 /** The controller roles to export: the user's edits if still valid, else the suggestion. */
 export function exportController(): ControllerSetup {
@@ -38,9 +49,15 @@ export async function buildGlb(onProgress?: (stage: string) => void): Promise<Ex
       clip.userData = { rigforge: { loop: c.loop, inPlace: c.inPlace } };
       return clip;
     });
-    const res = await exportCharacter(character.root, baked, { preset: exportPreset, onProgress });
-    set('exportResult', res);
-    return res;
+    onProgress?.('Fitting the body');
+    const layers = await exportLayers();
+    try {
+      const res = await exportCharacter(character.root, baked, { preset: exportPreset, onProgress, layers });
+      set('exportResult', res);
+      return res;
+    } finally {
+      for (const l of layers) l.geometry.dispose();
+    }
   } finally {
     set('playing', wasPlaying);
   }

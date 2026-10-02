@@ -57,7 +57,7 @@ export function BodyPanel() {
             {playing ? '❚❚ Pause' : '▶ Walk'}
           </button>
         </div>
-        {info && <p className="footer-note">Body: {info.triangles.toLocaleString()} triangles, generated in {Math.round(info.ms)} ms. Not exported yet.</p>}
+        {info && <p className="footer-note">Body: {info.triangles.toLocaleString()} triangles, generated in {Math.round(info.ms)} ms. Exported with the character.</p>}
       </Section>
       <button className="btn primary block" onClick={() => goto('animate')}>Add animations →</button>
     </>

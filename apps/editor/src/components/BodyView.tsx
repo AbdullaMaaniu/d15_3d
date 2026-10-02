@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { SkinnedMesh } from 'three';
-import { partsSummary, useStore } from '../store';
-import { buildBodyMesh, loadReferenceBody } from '../lib/body';
-
-const DEFAULT_SKIN = '#d9a07a';
+import { useStore } from '../store';
+import { bodySkinColor, buildBodyMesh, loadReferenceBody } from '../lib/body';
 
 /** The generated body inside the character, regenerated shortly after the shape changes. */
 export function BodyView() {
@@ -24,10 +22,7 @@ export function BodyView() {
     const t = setTimeout(async () => {
       const ref = await loadReferenceBody();
       if (cancelled) return;
-      // Skin colour from the Parts step, when it has a Skin part.
-      const parts = useStore.getState().parts;
-      const skinIndex = parts?.defs.findIndex((d) => d.name.toLowerCase() === 'skin') ?? -1;
-      const skin = (skinIndex >= 0 && partsSummary()?.baseColors[skinIndex]) || DEFAULT_SKIN;
+      const skin = bodySkinColor();
       try {
         const t0 = performance.now();
         const next = buildBodyMesh(built, joints, shape, skin, ref);

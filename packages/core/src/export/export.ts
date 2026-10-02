@@ -1,4 +1,4 @@
-import type { AnimationClip, Object3D } from 'three';
+import type { AnimationClip, Object3D, SkinnedMesh } from 'three';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { Document, WebIO, type Texture } from '@gltf-transform/core';
 import { ALL_EXTENSIONS, EXTMeshoptCompression, EXTTextureWebP } from '@gltf-transform/extensions';
@@ -18,6 +18,12 @@ export interface ExportOptions {
   /** Keyframe reduction (default true). */
   resample?: boolean;
   onProgress?: (stage: string) => void;
+  /**
+   * Extra meshes skinned to the character's own skeleton, written beside its
+   * mesh: the generated body, and separated garments once there are any. Each is
+   * placed next to the character mesh only while serializing.
+   */
+  layers?: SkinnedMesh[];
 }
 
 export interface SizeBreakdown {
@@ -45,6 +51,31 @@ export async function toGLB(root: Object3D, clips: AnimationClip[]): Promise<Uin
   const exporter = new GLTFExporter();
   const result = await exporter.parseAsync(root, { binary: true, animations: clips, onlyVisible: false });
   return new Uint8Array(result as ArrayBuffer);
+}
+
+/** Runs `fn` with each layer parented beside the root's skinned mesh, sharing its bind space. */
+async function withLayers<T>(root: Object3D, layers: SkinnedMesh[], fn: () => Promise<T>): Promise<T> {
+  if (!layers.length) return fn();
+  let host: SkinnedMesh | null = null;
+  root.traverse((o) => {
+    if (!host && (o as SkinnedMesh).isSkinnedMesh && !layers.includes(o as SkinnedMesh)) host = o as SkinnedMesh;
+  });
+  const parent = (host as SkinnedMesh | null)?.parent ?? root;
+  const saved = layers.map((l) => ({ layer: l, parent: l.parent, bind: l.bindMatrix.clone() }));
+  for (const l of layers) {
+    if (host) l.bind(l.skeleton, (host as SkinnedMesh).bindMatrix);
+    parent.add(l);
+  }
+  root.updateMatrixWorld(true);
+  try {
+    return await fn();
+  } finally {
+    for (const { layer, parent: was, bind } of saved) {
+      if (was) was.add(layer);
+      else layer.removeFromParent();
+      layer.bind(layer.skeleton, bind);
+    }
+  }
 }
 
 export async function createIO(): Promise<WebIO> {
@@ -81,7 +112,7 @@ export async function exportCharacter(root: Object3D, clips: AnimationClip[], op
   const warnings: string[] = [];
 
   progress('Serializing glTF');
-  const raw = await toGLB(root, clips);
+  const raw = await withLayers(root, options.layers ?? [], () => toGLB(root, clips));
   const io = await createIO();
   const doc = await io.readBinary(raw);
   const before = sizeBreakdown(doc, raw.byteLength);

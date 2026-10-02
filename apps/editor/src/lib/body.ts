@@ -2,6 +2,27 @@ import { BufferGeometry, Float32BufferAttribute, Matrix4, MeshStandardMaterial, 
 import { decodeReferenceBody, fitReferenceBody, generateBody, insideSlim, tsKernels, type BodyShape, type JointMap, type ReferenceBody } from '@rigforge/core';
 import type { RiggedCharacter } from '@rigforge/core';
 import referenceUrl from '@rigforge/core/assets/reference-body.bin?url';
+import { partsSummary, useStore } from '../store';
+
+const DEFAULT_SKIN = '#d9a07a';
+
+/** Skin colour from the Parts step, when it has a Skin part. */
+export function bodySkinColor(): string {
+  const parts = useStore.getState().parts;
+  const skinIndex = parts?.defs.findIndex((d) => d.name.toLowerCase() === 'skin') ?? -1;
+  return (skinIndex >= 0 && partsSummary()?.baseColors[skinIndex]) || DEFAULT_SKIN;
+}
+
+/**
+ * The body for export, as it looks in the Body step; null when it's left out
+ * or the character has none (not humanoid, or a rig reused from the imported file).
+ */
+export async function exportBodyMesh(): Promise<SkinnedMesh | null> {
+  const { character, joints, rigType, bodyShape, exportBody } = useStore.getState();
+  const built = character?.built;
+  if (!exportBody || !built || !joints || rigType !== 'humanoid') return null;
+  return buildBodyMesh(built, joints, bodyShape, bodySkinColor(), await loadReferenceBody());
+}
 
 let reference: Promise<ReferenceBody | null> | null = null;
 
@@ -36,7 +57,7 @@ function insideCharacter(built: RiggedCharacter, joints: JointMap, ref: Referenc
 /**
  * The body as a skinned mesh driven by the character's own skeleton, so it
  * moves with every clip: the reference body fitted to the rig and slimmed to
- * sit inside the clothes, or a generated one when the reference isn't available. Shown in the Body step (not exported yet).
+ * sit inside the clothes, or a generated one when the reference isn't available. Shown in the Body step and written into the exported GLB.
  */
 export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: BodyShape, skinColor: string, ref: ReferenceBody | null): SkinnedMesh {
   const body = ref ? fitReferenceBody(ref, joints, shape, insideCharacter(built, joints, ref)) : generateBody(joints, shape);
@@ -52,6 +73,7 @@ export function buildBodyMesh(built: RiggedCharacter, joints: JointMap, shape: B
   g.setIndex(new Uint32BufferAttribute(body.index, 1));
   const mesh = new SkinnedMesh(g, new MeshStandardMaterial({ color: skinColor, roughness: 0.75, metalness: 0 }));
   mesh.name = 'Body';
+  (mesh.material as MeshStandardMaterial).name = 'Skin';
   mesh.frustumCulled = false;
   mesh.userData.rfBody = true;
   // Geometry is in rig space, like the character's own mesh.
