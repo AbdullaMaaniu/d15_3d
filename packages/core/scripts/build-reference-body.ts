@@ -15,6 +15,7 @@ import { computeSkinWeights } from '../src/rig/weights';
 import { humanoidDefs } from '../src/skeleton';
 import { createWasmKernels, tsKernels, type Kernels } from '../src/kernels';
 import { encodeReferenceBody, FIT_SLOTS } from '../src/body/reference';
+import { removeSeams } from './seams';
 
 const [input, trisArg] = process.argv.slice(2);
 if (!input) throw new Error('usage: build-reference-body <model.glb> [triangles]');
@@ -41,8 +42,8 @@ for (let i = 0; i < src.length; i += 3) {
   scaled[i + 2] = src[i + 2] * s;
 }
 
-// Soften the bodysuit seams the generator carved in (fine grooves), keeping the volume.
-taubin(scaled, srcIndex, Number(process.env.SEAM_SMOOTH ?? 10));
+// Remove the bodysuit seams the generator sculpted in, keeping the anatomy around them.
+console.log('seams:', removeSeams(scaled, srcIndex));
 
 await MeshoptSimplifier.ready;
 const [simple] = MeshoptSimplifier.simplify(srcIndex, scaled, 3, targetTris * 3, 0.02, []);
@@ -124,42 +125,4 @@ function smoothWeights(w: { skinIndex: Uint16Array; skinWeight: Float32Array }, 
   }
   console.log(`fit weights: largest weight left out ${dropped.toFixed(3)}`);
   return { skinIndex, skinWeight };
-}
-
-/** Taubin smoothing (shrink-free): alternate +lambda / -mu umbrella steps. */
-function taubin(p: Float32Array, idx: Uint32Array, iterations: number) {
-  const V = p.length / 3;
-  const start = new Uint32Array(V + 1);
-  const edges = new Set<number>();
-  const pairs: number[] = [];
-  for (let t = 0; t < idx.length; t += 3) {
-    for (let e = 0; e < 3; e++) {
-      const a = idx[t + e], b = idx[t + ((e + 1) % 3)];
-      const key = Math.min(a, b) * V + Math.max(a, b);
-      if (edges.has(key)) continue;
-      edges.add(key);
-      pairs.push(a, b);
-    }
-  }
-  for (let i = 0; i < pairs.length; i++) start[pairs[i] + 1]++;
-  for (let v = 0; v < V; v++) start[v + 1] += start[v];
-  const fill = start.slice(0, V);
-  const nb = new Uint32Array(pairs.length);
-  for (let i = 0; i < pairs.length; i += 2) {
-    nb[fill[pairs[i]]++] = pairs[i + 1];
-    nb[fill[pairs[i + 1]]++] = pairs[i];
-  }
-  const tmp = new Float32Array(p.length);
-  for (let it = 0; it < iterations * 2; it++) {
-    const f = it % 2 === 0 ? 0.5 : -0.53;
-    for (let v = 0; v < V; v++) {
-      const n = start[v + 1] - start[v];
-      for (let k = 0; k < 3; k++) {
-        let s = 0;
-        for (let j = start[v]; j < start[v + 1]; j++) s += p[nb[j] * 3 + k];
-        tmp[v * 3 + k] = p[v * 3 + k] + f * (n ? s / n - p[v * 3 + k] : 0);
-      }
-    }
-    p.set(tmp);
-  }
 }
